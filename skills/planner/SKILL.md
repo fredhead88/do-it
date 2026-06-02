@@ -15,6 +15,14 @@ thinker before it even starts. Stay in the intake lane.
 
 Read `DO-IT.md` for the shared protocol (lanes, numbering, message types).
 
+## First move — read any memos addressed to you
+
+Before triaging, `ls "$BRIEF_INBOX"/memo-*.md`. A thinker may have left you an
+advisory memo ("this topic relates to X already in flight"). Read each and
+**acknowledge it** — say in one line how it shapes your triage — then once you've
+folded it in, `mv` it to `BRIEF_INBOX/_archive/` with a one-line reason. A memo is
+context, never a work item; it never becomes a brief on its own.
+
 ## Input
 
 A dump: ideas across topics, meeting notes, transcripts, pasted fragments. Voice

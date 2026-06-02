@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# DO-IT setup: create the two inbox lanes, install the skills, and check that
+# DO-IT setup: create the inbox lanes, install the skills, and check that
 # the CONFIG block in DO-IT.md has been filled in. Safe to re-run (idempotent).
 set -euo pipefail
 
@@ -8,17 +8,23 @@ SKILLS_SRC="$ROOT/skills"
 SKILLS_DST="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 SPEC_INBOX="${SPEC_INBOX:-$HOME/.claude/spec-inbox}"
 BRIEF_INBOX="${BRIEF_INBOX:-$HOME/.claude/brief-inbox}"
+COLLECT_INBOX="${COLLECT_INBOX:-$HOME/.claude/collect-inbox}"
 
 echo "DO-IT setup"
 echo "  skills  -> $SKILLS_DST"
-echo "  inboxes -> $SPEC_INBOX , $BRIEF_INBOX"
+echo "  inboxes -> $SPEC_INBOX , $BRIEF_INBOX , $COLLECT_INBOX"
 
 # 1. Inbox lanes (+ archives)
-mkdir -p "$SPEC_INBOX/_archive" "$BRIEF_INBOX/_archive"
+mkdir -p "$SPEC_INBOX/_archive" "$BRIEF_INBOX/_archive" "$COLLECT_INBOX/_archive"
 
 # 2. Install skills (symlink so edits in the repo take effect live)
 mkdir -p "$SKILLS_DST"
-for d in think handover orc planner drop; do
+# `drop`, `memo`, and `collect` are no longer standalone skills — collect and memo
+# are now shapes/actions of `think`. Remove stale links from earlier installs.
+for stale in drop memo collect; do
+  if [ -L "$SKILLS_DST/$stale" ]; then rm -f "$SKILLS_DST/$stale"; echo "  removed stale link: $stale (folded into think)"; fi
+done
+for d in planner think handover orc; do
   ln -sfn "$SKILLS_SRC/$d" "$SKILLS_DST/$d"
   echo "  linked skill: $d"
 done

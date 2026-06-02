@@ -29,6 +29,15 @@ orchestrator is a failed orchestrator.
 
 1. **Read ground truth** — never trust recollection: `INTENT_DOC`, and `ARCH_DOCS`
    if set. `INTENT_DOC` is the final arbiter of "done".
+1b. **Pick up the relay baton if one's waiting.** If `docs/sessions/orc-relay.md`
+   exists with `status: HANDED-OFF`, a previous orchestrator handed you a live
+   run mid-flight. Read it, then **reconcile against the filesystem — the baton is
+   a hint, the tree is the truth**: for every worker it lists as in-flight, check
+   the branch/worktree and *adopt the result if finished, re-dispatch if not*
+   (background workers die with the session that launched them). Confirm that prior
+   session is closed before you proceed — never two live orchestrators. Once
+   reconciled, stamp the baton `status: RESUMED <ts>` so it isn't picked up twice.
+   See "Handing over to the next orchestrator".
 2. **Halt-checks first** (before listing the work queue), per DO-IT.md:
    - Any `*.bounced.md` in `SPEC_INBOX` → an un-acknowledged bounce. Surface it
      and require the human to say "skip" or "requeue" before processing past it.
@@ -36,8 +45,12 @@ orchestrator is a failed orchestrator.
      matching delivered spec → a thinker that may have died mid-thought. Surface
      it: "brief 003 claimed 2h ago, no spec — dead session?" Let the human decide.
 3. **List the spec queue:** `ls -t "$SPEC_INBOX"/*.spec.md`. This is a QUEUE —
-   several pending specs is NORMAL. Read `memo-*.md` as standing context (never
-   build from a memo). You may work multiple specs; sequence by dependency.
+   several pending specs is NORMAL. You may work multiple specs; sequence by
+   dependency. Then **read every `memo-*.md` and acknowledge each one**: state on
+   the status board how it affects your plan ("memo-roadmap: noted — sequencing 004
+   before 003"). A memo read silently is the failure mode. Never build from a memo;
+   once you've folded its guidance in (or judged it moot), `mv` it to `_archive/`
+   with a one-line reason — its life isn't tied to any spec.
 4. **Survey code state:** `git status`, `git branch`. You're the session closest
    to HEAD — act like it.
 5. **Validate each spec against current code** before planning:
@@ -81,6 +94,11 @@ Dispatch anything slow in the background and **return to the conversation
 immediately**. Don't block on a build or a worker. Your job between dispatches is
 to talk to the user and take in new specs — not to watch workers grind.
 
+**Re-scan the inbox every turn.** Nothing is event-driven: a spec handed over or a
+memo dropped *while you're running* won't announce itself. At the top of each turn
+do a cheap `ls "$SPEC_INBOX"/*.spec.md "$SPEC_INBOX"/memo-*.md` and surface any new
+arrival on the board. Otherwise a 3pm handover sits unseen until your next boot.
+
 ## Verification gate (before accepting any worker output)
 
 1. **Schema** — matches the task's declared acceptance criteria/output?
@@ -119,13 +137,39 @@ If `DEPLOY_CMD` is set, deploy when integration and the grader pass — then
 exited 0: hit the real endpoint/surface and observe the change. If a deploy breaks
 something: revert + redeploy last-good, then diagnose on a branch.
 
+## Write the review card (every shipped spec gets one)
+
+Before you archive a spec, write a **review card** so the user can check it
+landed right — especially when you've shipped several this run and they've lost
+the thread. Drop `NNN-<slug>.review.md` (numbered after the *spec*) into
+`BRIEF_INBOX`, tmp-then-rename. Keep it tiny and human-readable:
+
+```
+spec:       NNN-<slug>
+intent:     <the frozen intent, verbatim>
+shipped:    <one line — what actually changed>
+look_at:    <routes / files / preview URL to open>
+eyeball:
+  - <concrete thing to check, phrased as a question>
+  - <…> (aim for ~4-6, the things most likely to be subtly wrong)
+grader:     matches intent: yes/no — <the blind grader's one-line reason>
+```
+
+**Every** shipped spec gets a card, no exceptions — that completeness is the
+point (a missing card would be exactly the ship you forgot to check). A `think`
+session in review mode walks these with the user later and either archives the
+card (happy) or writes a corrective spec (unhappy). See DO-IT.md → "The review
+loop".
+
 ## Close the spec
 
 `mv` the spec to `SPEC_INBOX/_archive/` (the frozen snapshot the grader used).
-Archive the matching `*.brief.claimed.md` and any `memo-*.md` whose topic this
-spec closed. Update the living docs that changed (`INTENT_DOC` if an invariant
-shifted; architecture/debt notes). Doing this as you go IS the "nothing falls
-through the cracks" function.
+Archive the matching `*.brief.claimed.md`. (A memo is archived on its own terms —
+once you've folded its guidance in, not because a spec closed; and do NOT archive
+the review card — it stays live in `BRIEF_INBOX` until a thinker walks it.) Update
+the living docs that changed (`INTENT_DOC` if an
+invariant shifted; architecture/debt notes). Doing this as you go IS the "nothing
+falls through the cracks" function.
 
 ## No silent stalls (see DO-IT.md for the full rule)
 
@@ -168,11 +212,47 @@ in the plan file on disk, not in this chat. Never re-dispatch an accepted task.
 
 - **~50% used:** warning — you're holding work that belonged in a sub-session.
   Push it out to workers that write files and return short summaries.
-- **~70% used:** HARD CHECKPOINT. Write ledger state to the plan file and hand off
-  (use `ginug` if available). Don't grind past this — saturated orchestrators are
-  where things fall through the cracks.
+- **~70% used:** HARD CHECKPOINT. Write the relay baton (next section) and stop.
+  Don't grind past this — saturated orchestrators are where things fall through
+  the cracks.
+
+## Handing over to the next orchestrator (the relay)
+
+An orchestrator saturates its context after a couple of specs. Because there can
+only be one orchestrator at a time, you can't spin up a helper — you pass the whole
+run to a *fresh* orchestrator session. Do NOT use a generic session-summary skill
+for this; it isn't built to carry a live run. Write a purpose-built **relay baton**.
+
+The principle is DO-IT's own: **state is the filesystem.** The plan file already
+holds the ledger. The baton only carries the *session-volatile* bits the plan file
+doesn't — chiefly which workers were mid-flight and as what branches, because those
+sub-sessions die with you.
+
+At the checkpoint, write `docs/sessions/orc-relay.md` (tmp-then-rename):
+
+```
+status:        HANDED-OFF
+handed_off_at: <ISO timestamp>
+plan_files:    [docs/.../plan-A.md, ...]        # where the ledger lives
+specs:
+  - NNN-<slug>: <phase: planning|building|grading|integrating|shipped>
+in_flight_workers:                               # the part only you know
+  - <objective> → branch <name> / worktree <path>  (verify: finished? adopt : re-dispatch)
+git:           integration branch <name>; live worktrees [<paths>]
+deploy:        <last deploy + verify result; what's built-but-undeployed>
+blocked:       <task + question waiting on the human, or —>
+carry_forward: <un-acked bounces, stale claims, anything the next boot must see>
+next_action:   <the single thing you were about to do>
+```
+
+Then tell the user, in one line: relay written, start a fresh `orc` session — it
+will pick the baton up in its first moves, reconcile it against the tree, and
+continue. The incoming orchestrator stamps it `RESUMED` so it can't be claimed
+twice. The baton is committed with the rest of your work, so the run is auditable.
 
 ## The singleton rule
 
 Never run two orchestrators on the same checkout. You are the only session that
-owns the tree and merges branches.
+owns the tree and merges branches. The relay is the *only* sanctioned way to move a
+live run between sessions: outgoing stamps `HANDED-OFF`, incoming confirms that and
+stamps `RESUMED` before doing anything — so the two never overlap.

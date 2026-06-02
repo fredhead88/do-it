@@ -26,21 +26,32 @@ planner ─briefs─▶ brief-inbox ─▶ think ─spec─▶ spec-inbox ─▶
 - **State is filesystem location.** A file's folder *is* its status — pending in a
   lane, or moved to `_archive/` when consumed. No database, no manifest to keep in
   sync.
-- **Two lanes, by reader:** `spec-inbox` (the orchestrator's) and `brief-inbox`
-  (the thinker's).
+- **Three lanes, by reader:** `spec-inbox` (the orchestrator's — specs, orc-directed
+  memos, bounces), `brief-inbox` (the thinker's — briefs, review cards, and
+  planner-directed memos), and `collect-inbox` (think's collect-mode pile). Plus an
+  in-repo relay file (`docs/sessions/orc-relay.md`) for orchestrator-to-orchestrator
+  handover — a single file, not an inbox.
 
-## The five roles
+## Three sessions, not six skills
 
-| Role | Session does | Output |
-|------|--------------|--------|
-| `planner` *(adv.)* | Triage a raw dump into topics | briefs + a triage receipt + a roadmap memo |
-| `think` | Brainstorm/research one topic, read-only on code | a spec |
-| `handover` | Validate + drop the spec | spec in `spec-inbox` |
-| `drop` *(adv.)* | Leave an advisory note | a memo (never a work item) |
-| `orc` | Plan, fan out, grade, integrate, ship | merged + deployed code |
+There are exactly **three bootable sessions**, one per stage:
 
-Core is **three** (`think` + `handover` + `orc`); `planner` and `drop` are
-optional add-ons you reach for only when running a lot of parallel work.
+| Stage | Session | Does | Output |
+|------|---------|------|--------|
+| 1 *(optional)* | `planner` | Triage a raw dump into topics | briefs + a triage receipt + a roadmap memo |
+| 2 | `think` | The worker seat — sit and turn intent into something buildable | a spec (or a closed/corrected review) |
+| 3 | `orc` | Plan, fan out, grade, integrate, ship; write review cards | merged + deployed code + review cards |
+
+`think` is the one with internal variety. It has **shapes** — brainstorm, walk
+review cards, claim a brief, collect small bugs — and **two outbound handoffs** it
+performs itself: hand over a spec (via the `handover` *helper* — a routine it
+invokes, not a seat you boot) and send a memo (advisory, to orc or planner).
+
+An earlier draft made `collect` and `memo` their own skills. That was a mistake and
+was reversed: collecting bugs and leaving a memo are things a *thinker does*, not
+separate seats a human sits in. Folding them back into `think` is why the bootable
+surface is three, not six. (The advisory-note action was once a skill called
+`drop`; it's now just "send a memo" inside `think`.)
 
 ## The pillars, and the decisions behind them
 
@@ -134,6 +145,95 @@ The thinker is gone (one-shot), so there's no dead session to bounce a spec back
 to. A bounce is therefore just **a message to the human**: in-session, the
 orchestrator says plainly why it won't build and you decide; if you're away, it
 writes a `*.bounced.md` note and halts on it at next boot so it can't rot.
+
+### Casual capture, without a meeting (collect mode)
+
+Brainstorm and triage both assume work arrives as something worth sitting down
+with — a topic, or a dump. Neither fits the steady drip of one-line bugs and nits
+you notice mid-day. Those had nowhere to land, so they interrupted a session or got
+lost. **Collect mode** is the missing low-friction spot — and it's a *shape of
+`think`*, not its own skill, because gathering bugs is something a thinker does.
+
+Its design is two phases on purpose. The **dump phase** stays out of your way — it
+records each item and does only seconds of background grouping, never an
+interrogation, because the moment capture costs effort you stop capturing. The pile
+*persists across sessions*, so you add to it over days. The **close phase**
+(`collect done`) is where the thinking finally happens: organize the pile, ask
+everything in one batch, emit a single batched spec, hand it over.
+
+It skips the *brainstorm ceremony* deliberately — routing a one-line fix through a
+full design session is the friction collect exists to remove — but not the spec
+contract: the batch spec carries a real per-cluster `intent:` + acceptance
+criteria like any other, and anything that turns out to need real design is peeled
+off as a *brief* instead of jammed in.
+
+> Decision: collect is a mode of `think` with a persistent pile, not a separate
+> skill. Making it its own skill (an earlier draft) was reversed — it added a seat
+> for something that's just a thing a thinker does.
+
+### Reading is pull-on-boot, and a read must be provable
+
+There is no daemon and no message bus here. A spec or memo is picked up because a
+human launches the session that reads that lane and its first moves say to `ls` and
+read. So the honest guarantee is "picked up on the next boot of that session, and
+mid-run if it re-scans" — not "instantly." Two rules keep that from being wishful:
+the reading session **re-scans its lane every turn** (so a spec handed over while
+orc is running is seen that afternoon, not next boot), and **a read is only real
+once acknowledged** — the session must state how a memo affected its plan, on the
+board or in the ledger. An item read with no visible effect is the silent-ignore
+failure mode the acknowledgement closes.
+
+Memos used to be archived "when the topic's spec closes" — fragile, since a memo
+may map to no spec or to several. Now a memo is archived when its guidance has been
+*folded in* (with a one-line reason), decoupled from any spec, so it can neither rot
+unread nor vanish before it was used.
+
+> Decision: lean on pull-on-boot + per-turn re-scan + an explicit read receipt,
+> rather than building an event system the one-machine, one-human reality doesn't
+> need.
+
+### Passing a live orchestrator to the next one (the relay)
+
+An orchestrator saturates its context after a couple of specs, and the singleton
+rule means you can't add a second to share the load — you replace it with a fresh
+one. The reflex is to reach for a generic "summarize the session" skill, but that
+isn't built to carry a *live run*: in-flight workers, half-integrated branches, a
+pending deploy.
+
+The relay baton fits DO-IT's own principle — state is the filesystem. The plan file
+already holds the ledger; the baton (`docs/sessions/orc-relay.md`) adds only the
+session-volatile bits the plan file can't: which workers were mid-flight and on what
+branches (those die with the session), git/worktree state, deploy state, blocks, and
+the one next action. The incoming orchestrator treats the baton as a **hint and the
+tree as truth** — it verifies each claimed in-flight worker against its branch and
+adopts-or-re-dispatches — which is exactly how the pipeline already handles dead
+background sub-sessions everywhere else.
+
+> Decision: a purpose-built baton + a `HANDED-OFF`→`RESUMED` handshake, not a
+> generic handoff doc and not a lock server. The handshake is the only thing
+> enforcing the singleton across the seam, and it's enough because one human
+> launches every session.
+
+### Closing the loop at the far end (review cards + `think` review mode)
+
+The blind grader checks whether a build matches its spec. But a *human* still
+needs to see whether the shipped thing matches what they pictured — and when
+`orc` ships 7–12 specs in a run, you lose the thread of what you designed and
+walk away hoping. So every shipped spec gets a short **review card**: what
+changed, where to look, a handful of things to eyeball, the grader's verdict.
+Every spec, no fast-skip — a missing card would be exactly the ship you forgot
+to check.
+
+The card closes the loop through the role that already exists. Opening a `think`
+session in review mode, you walk the cards; a happy one is archived, an unhappy
+one becomes a *corrective spec* back to `orc`. Reusing `think` (read-only, ends
+in a spec) is what keeps this from being a new role — and routing the re-think
+through a human-launched session is the same one-shot discipline as everywhere
+else: no edge ever writes back into a dead session.
+
+> Decision: review cards ride in `brief-inbox` (the thinker reads them), and the
+> loop is closed by `think`, not a new skill. The only new surface is the card
+> itself and one `think` shape.
 
 ## What was deliberately cut
 

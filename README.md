@@ -16,23 +16,26 @@ If you drive Claude Code hard, you hit two walls:
    thinking and research have dead time — while one session researches, you could
    be feeding the next.
 
-DO-IT splits the work into roles, each a thin Claude Code skill that boots a
-session into a job:
+DO-IT splits the work into **three stages**, each a thin Claude Code skill that
+boots a session into a job:
 
-- **`think`** — a read-only session that brainstorms and writes a *spec*. Run
-  three or four at once; by the time you circle back, one's ready. You're never
-  idle.
-- **`handover`** — drops a finished spec into the orchestrator's inbox. This is
-  your commit moment: "build this."
-- **`orc`** — the orchestrator. Picks specs out of the inbox, fans out parallel
-  sub-sessions to build them, **grades the result with a fresh session that never
-  saw the build**, integrates, and ships — while staying lean by pushing all the
-  heavy work to those sub-sessions.
+- **`planner`** *(stage 1, optional)* — triages a raw dump into discrete *briefs*.
+- **`think`** *(stage 2 — the worker seat)* — a read-only session where you sit and
+  turn intent into a *spec*. It has shapes (brainstorm, walk review cards, claim a
+  brief, collect small bugs) and hands its own work over. Run three or four at
+  once; by the time you circle back, one's ready. You're never idle.
+- **`orc`** *(stage 3)* — the orchestrator. Picks specs out of the inbox, fans out
+  parallel sub-sessions to build them, **grades the result with a fresh session
+  that never saw the build**, integrates, and ships — staying lean by pushing all
+  the heavy work to those sub-sessions. Singleton.
 
 ```
-think  ──spec──▶  spec-inbox  ──▶  orc  ──▶  plan ▶ fan out workers ▶ grade ▶ ship
-(×N, parallel)    (a folder)        (one, owns the git tree)
+planner ─briefs─▶  think  ──spec──▶  spec-inbox  ──▶  orc  ──▶  plan ▶ fan out ▶ grade ▶ ship
+(stage 1)        (×N, the worker seat)  (a folder)     (one, owns the git tree)
 ```
+
+`handover` (drop a spec into the inbox — your commit moment) is a helper a `think`
+session invokes, not a separate seat you boot into.
 
 Sessions are **one-shot and disposable**. Nothing is ever resumed; no message
 loops back into a dead session. Anything loop-like routes through you. The inbox
@@ -41,7 +44,7 @@ nothing to keep in sync.
 
 ## What makes it more than copy-paste
 
-Three ideas do the real work:
+A handful of ideas do the real work:
 
 - **A blind grader.** The session that built something is the worst judge of
   whether it's right — it spent its whole context trying to make it right. So
@@ -56,6 +59,18 @@ Three ideas do the real work:
   assumptions), parks only the one blocked task while the rest keep running, makes
   any genuine wait loud and timestamped, and reports at the end exactly what it
   guessed versus what it waited on.
+- **A review loop that closes.** Ship 10 specs overnight and you lose track of
+  what you even designed. So `orc` leaves a short, human-readable *review card*
+  for every spec it ships — what changed, where to look, a handful of things to
+  eyeball, the grader's verdict. Later you open a `think` session in review mode,
+  walk the cards, and on anything that missed it writes a corrective spec straight
+  back to `orc`. The loop closes through you, never through a resumed session.
+- **An orchestrator relay.** One orchestrator runs at a time, and it saturates its
+  context after a couple of specs. Instead of a generic "summarize and hope," it
+  writes a purpose-built *baton* — which workers were mid-flight and on what
+  branches, git/deploy state, the next action — that a fresh `orc` reads and
+  **reconciles against the actual tree** before continuing. The baton is a hint;
+  the filesystem is the truth.
 
 ## Quickstart
 
@@ -74,17 +89,22 @@ Then, in Claude Code:
 
 That's the whole core: **three skills + one shared protocol doc (`DO-IT.md`)**.
 
-## Advanced add-ons (optional)
+## The shapes a `think` session can take
 
-Two more skills help once you're running a lot of parallel work. Skip them until
-you feel the need:
+`think` is one skill with several shapes — you pick one at boot. They are *not*
+separate skills:
 
-- **`planner`** — intake/triage. Turns a raw dump (ideas, meeting notes,
-  transcripts) into discrete *briefs* for thinker sessions, with a receipt that
-  accounts for every item so nothing is silently dropped.
-- **`drop`** — leaves the orchestrator an *advisory memo* ("this might affect how
-  you're thinking"). A memo is context, never a work item — the orchestrator never
-  builds from one.
+- **Brainstorm** — design something new (or develop a claimed brief) → a spec.
+- **Review** — walk the orchestrator's review cards; archive the good, send back a
+  corrective spec on anything that missed.
+- **Claim a brief** — work whatever the `planner` queued.
+- **Collect** — a persistent pile you drop small bugs/nits into over days; on
+  `collect done` it batches them into one spec.
+
+And a thinker performs two handoffs itself (offered when the work is ready, not
+booted as their own skills): **hand over a spec** (to `orc`, via the `handover`
+helper) and **send a memo** (advisory context to `orc` or the `planner`, never a
+work item).
 
 ## How it's organized
 
@@ -93,11 +113,10 @@ do-it/
 ├── DO-IT.md          # the shared protocol — CONFIG block + all the rules
 ├── setup.sh          # creates the inboxes, links the skills, checks CONFIG
 ├── skills/
-│   ├── think/        # core
-│   ├── handover/     # core
-│   ├── orc/          # core
-│   ├── planner/      # advanced
-│   └── drop/         # advanced
+│   ├── planner/      # stage 1 (optional) — triage a dump into briefs
+│   ├── think/        # stage 2 — the worker seat: brainstorm / review / collect / claim-brief
+│   ├── handover/     # helper think invokes to drop a spec in the inbox
+│   └── orc/          # stage 3 — build, grade, integrate, ship; review cards + relay
 └── docs/DESIGN.md    # the full design rationale and the decisions behind it
 ```
 
