@@ -37,14 +37,26 @@ because its header-validation logic is worth isolating; you never boot it). Net
 bootable surface went from a planned six skills back to three. `drop` was renamed
 along the way and then absorbed — the advisory action is now just "send a memo."
 
-## Addition 1 — collect mode (persistent pile)
+## Addition 1 — collect (a shape of `think`)
 
-A shape of `think`. Dump phase: fire items, it appends to a `*.collecting.md` pile
-in `COLLECT_INBOX`, light grouping only, no interrogation; the pile **persists
-across sessions**. Close phase (`collect done`): organize, peel anything too big
-into a brief, ask questions in one batch, emit one batched spec (per-cluster intent
-+ acceptance), hand it over, archive the pile. Skips the brainstorm ceremony, not
+A shape of `think`, the inverse of brainstorm: low-touch across many small items,
+with the thinking **deferred** to one synthesis pass. Capture phase: fire items, it
+records each in a working list, light grouping + light background research only, no
+interrogation. Synthesize phase (`collect done`): organize, peel anything too big
+into a brief, resolve questions in one batch, emit one comprehensive spec
+(per-cluster intent + acceptance), hand it over. Skips the brainstorm ceremony, not
 the spec contract.
+
+**Session-scoped (settled 2026-06-02, shipped 2.1.0).** Collect originally shipped
+in 2.0.0 as a *persistent cross-session pile* (`*.collecting.md` in a `collect-inbox`
+lane). That was over-built for one human on one machine: the only thing persistence
+bought was surviving a mid-collect crash, and keeping the pile "honest" across
+sessions dragged in a whole lifecycle (counters, an `_archive/`, and a per-item
+"discharge" protocol drafted on the way here). All of it removed. Collect now runs
+and finishes inside one session — the running list is an in-session working doc, no
+lane, no message type. If the session dies mid-collect the jots are lost; that's the
+accepted trade. (The discharge-map / `status: discharged` apparatus never reached a
+release — it was superseded by this decision before shipping.)
 
 ## Addition 2 — the review loop
 
@@ -77,12 +89,27 @@ The operator pushed on whether transfer is "automatic." It isn't — it's
   guidance is folded in (one-line reason), **decoupled from any spec** — so a memo
   can neither rot unread nor be archived before use.
 
+## Spec hygiene — a spec ships with questions resolved (2.1.0)
+
+The spec structure used to list an "Open questions" section. That's backwards: a
+thinking session *is* the place questions get resolved, so a spec carrying built-in
+open questions just pushes the thinker's unfinished work onto the orchestrator. The
+rule now: a finished spec has **no open-questions section** — if a question is
+genuinely open, the spec isn't ready (keep thinking), or it's a real fork the user
+must pick (put it to them now, fold in the answer). This is about the *artifact*,
+not the work — asking the user questions while thinking is the whole job. The
+orchestrator may still raise *new* questions later from its broader, code-level view
+of how the change collides with other moving parts; that's expected and lives on its
+side of the seam, not pre-loaded into the spec. Removed the section from both the
+spec structure and the readiness self-check in `think`.
+
 ## Net surface change
 
 - **0 net new skills** (collect + memo folded into `think`; `handover` stays a
   helper). Bootable seats: `planner`, `think`, `orc`.
-- **+1 lane** (`collect-inbox`), **+1 in-repo relay file** (`docs/sessions/orc-relay.md`).
-- **+ message types:** `collecting`, `review`, relay baton; memo lane now depends on
+- **+1 in-repo relay file** (`docs/sessions/orc-relay.md`). (Collect adds no lane —
+  it's session-scoped; the 2.0.0 `collect-inbox` was retired in 2.1.0.)
+- **+ message types:** `review`, relay baton; memo lane now depends on
   reader (orc → spec-inbox, planner → brief-inbox).
 - **+ `think` shapes** (review, collect) and **+ outbound handoffs** (spec, memo).
 - **+ `orc`:** review-card emission, relay write/read+reconcile, per-turn re-scan,

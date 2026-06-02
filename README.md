@@ -98,8 +98,9 @@ separate skills:
 - **Review** — walk the orchestrator's review cards; archive the good, send back a
   corrective spec on anything that missed.
 - **Claim a brief** — work whatever the `planner` queued.
-- **Collect** — a persistent pile you drop small bugs/nits into over days; on
-  `collect done` it batches them into one spec.
+- **Collect** — low-touch capture of many small bugs/nits in one session; on
+  `collect done` it synthesizes them into one comprehensive spec. Session-scoped —
+  nothing persists between sessions.
 
 And a thinker performs two handoffs itself (offered when the work is ready, not
 booted as their own skills): **hand over a spec** (to `orc`, via the `handover`

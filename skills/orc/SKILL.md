@@ -208,27 +208,45 @@ NEXT: <your next move, or what you need from the user>
 If nothing changed: one line — "Board unchanged — N in-flight." The ledger lives
 in the plan file on disk, not in this chat. Never re-dispatch an accepted task.
 
-## Context thresholds
+## When to relay (and when NOT to)
 
-- **~50% used:** warning — you're holding work that belonged in a sub-session.
-  Push it out to workers that write files and return short summaries.
-- **~70% used:** HARD CHECKPOINT. Write the relay baton (next section) and stop.
-  Don't grind past this — saturated orchestrators are where things fall through
-  the cracks.
+**Default posture: keep working and checkpoint the ledger as you go.** The relay
+baton is for a *genuine forced handoff* — not a tidy stopping point you talk
+yourself into while momentum is good. A relay is expensive: it forces the user to
+boot a fresh `orc` that pays full cold-start re-derivation. Don't reach for it
+unless something real makes continuing worse than restarting.
+
+**Do NOT self-estimate your context fraction.** You cannot actually observe how
+much of your context window is used — there is no "50% / 70%" number you can read,
+so any such estimate is a vibe, and the vibe biases toward a premature handoff
+("I've done a lot of work, I must be full"). Volume of work done is **not** a
+context-pressure signal. Ignore it.
+
+**Relay only on an OBSERVABLE signal:**
+- an actual **autocompact / context-limit warning** from the harness;
+- **repeated tool failures** you can't get past, or visibly **degraded output**
+  (you're forgetting earlier decisions, repeating yourself, contradicting the
+  ledger);
+- an **explicit user cue** to hand off (or `ginug`-style "wrap up / context is
+  long").
+
+Absent one of those, keep going — and keep the plan-file ledger current every turn
+so that *if* a real signal hits (or the session dies unexpectedly), the baton is a
+two-minute write, not a reconstruction.
 
 ## Handing over to the next orchestrator (the relay)
 
-An orchestrator saturates its context after a couple of specs. Because there can
-only be one orchestrator at a time, you can't spin up a helper — you pass the whole
-run to a *fresh* orchestrator session. Do NOT use a generic session-summary skill
-for this; it isn't built to carry a live run. Write a purpose-built **relay baton**.
+When one of those signals fires, you pass the whole run to a *fresh* orchestrator
+session — there can only be one orchestrator at a time, so you can't spin up a
+helper. Do NOT use a generic session-summary skill for this; it isn't built to
+carry a live run. Write a purpose-built **relay baton**.
 
 The principle is DO-IT's own: **state is the filesystem.** The plan file already
 holds the ledger. The baton only carries the *session-volatile* bits the plan file
 doesn't — chiefly which workers were mid-flight and as what branches, because those
 sub-sessions die with you.
 
-At the checkpoint, write `docs/sessions/orc-relay.md` (tmp-then-rename):
+When you relay, write `docs/sessions/orc-relay.md` (tmp-then-rename):
 
 ```
 status:        HANDED-OFF

@@ -22,9 +22,10 @@ Read `DO-IT.md` (the shared protocol) if you haven't this session.
 **You are read-only on code. You never edit code and you never touch git.** This
 is what lets several thinker sessions run at once without colliding, and what lets
 the user stay busy across them. You may read anything, run read-only commands, and
-dispatch research sub-agents. The only things you write are: a spec, a collecting
-pile, a memo, and review notes — never code. If the user asks you to implement or
-fix code: stop, remind them this is a thinker session, and offer to spec it.
+dispatch research sub-agents. The only things you write are: a spec, an in-session
+collect working-list, a memo, and review notes — never code. If the user asks you to
+implement or fix code: stop, remind them this is a thinker session, and offer to
+spec it.
 
 ## First moves — pick the shape
 
@@ -34,12 +35,11 @@ fix code: stop, remind them this is a thinker session, and offer to spec it.
    - `ls "$BRIEF_INBOX"/*.review.md` — review cards the orchestrator shipped (work
      to eyeball).
    - `ls "$BRIEF_INBOX"/*.brief.md` — briefs the planner left.
-   - `ls "$COLLECT_INBOX"/*.collecting.md` — open bug/nit piles.
 3. **Offer the menu** (one short message) and let the user choose:
    - **Brainstorm** — something new, or develop a waiting brief.
    - **Process done work** — walk the orchestrator's review cards.
    - **Pull from the planner** — claim a waiting brief.
-   - **Collect bugs** — add to (or open) a pile of small items.
+   - **Collect** — capture many small items now, synthesize one spec at the end.
 4. **Confirm in one line** what you're doing before diverging.
 
 Throughout the session, two handoffs are always available — offer them when it
@@ -97,38 +97,44 @@ A thin entry into Shape A: the user wants to work whatever the planner queued.
 List `BRIEF_INBOX/*.brief.md`, pick one with the user, claim it (rename +
 `claimed_at:`), then proceed exactly as Brainstorm.
 
-## Shape D — Collect bugs (the persistent pile)
+## Shape D — Collect (capture many small items, synthesize one spec)
 
-Casual capture for the steady drip of small bugs/nits that aren't worth a full
-brainstorm. Two sub-phases:
+A distinct interaction contract, not just "make a list." It inverts the brainstorm:
+brainstorm is high-touch on one topic (diverge → converge with you); collect is
+**low-touch across many small items**, and the thinking is *deferred* to a single
+synthesis pass at the end. Use it for the steady drip of bugs/nits/small asks that
+each aren't worth a brainstorm but together make one coherent spec.
 
-- **Dump (default — stay out of the way).** The user fires items; you append each
-  to a `*.collecting.md` pile in `COLLECT_INBOX` with a stable `[item-NN]` id, do
-  only seconds of light grouping/dedupe and note the likely file/route, and
-  **acknowledge in one line**. Do NOT interrogate — that's the point. The pile is
-  the **one mutable work file** in DO-IT; it persists across sessions, so you drop
-  items today and add more tomorrow. (Boot: if one open pile exists and no topic is
-  named, use it; if several, ask which; if none, open `NNN-<slug>.collecting.md`.)
-- **Close (`collect done`).** *Now* you do the held-back thinking: re-read the
-  pile, group into clusters, peel anything too big into a **brief** for a later
-  brainstorm (don't jam it in), ask your clarifying questions in **one batch**,
-  then write **one batched spec** (per-cluster intent + acceptance criteria) and
-  hand it over. Archive the pile to `COLLECT_INBOX/_archive/`.
+**Session-scoped.** Collect runs and finishes within the one session it starts in —
+capture, then synthesize before you stop. There is no persistent cross-session pile
+and no message lane; the running list is a working doc you keep in this session
+(scratch file or in-context) and consume into the spec. If the session dies
+mid-collect the jots are lost — that's the accepted trade for zero lane machinery.
 
-Collect skips the brainstorm-to-spec ceremony on purpose — small mechanical items
-don't need it — but the spec it emits meets the same contract as any other.
+Two phases:
 
-Pile structure:
+- **Capture (default — stay out of the way).** The user fires items; you record each
+  with a stable `[item-NN]` id, do only seconds of light grouping/dedupe, note the
+  likely file/route, and may do **light background research** (read the named file,
+  confirm the route exists) — but **acknowledge in one line and do NOT interrogate.**
+  Holding the questions is the point; the deferral is the whole value.
+- **Synthesize (`collect done` / "organize it").** *Now* the thinking happens, once,
+  over everything captured: group into clusters, peel anything too big into a
+  **brief** for a later brainstorm (don't jam it in), **resolve every question with
+  the user in one batch**, then write **one comprehensive spec** (per-cluster
+  `intent:` + acceptance criteria) and hand it over. The spec ships with its
+  questions resolved — collect is precisely *when* they get resolved.
+
+Collect skips the brainstorm ceremony on purpose — but the spec it emits meets the
+same contract as any other, including no open questions.
+
+Working-list shape (a plain in-session doc — no counter, no lane, no archive):
 
 ```
-topic:   <slug>
-opened:  <ISO timestamp>
-status:  collecting
-## Items
-- [item-01] <text>  · likely: <path/phrase> · group: A · added <ts>
+## Collecting: <topic>
+- [item-01] <text>  · likely: <path/phrase> · group: A
+- [item-02] <text>  · likely: <path/phrase> · group: A
 ```
-
-Append tmp-then-rename so no reader sees a partial file.
 
 ---
 
@@ -144,10 +150,20 @@ Write it wherever your project keeps specs. Required structure:
 - **Requirements** — each as Problem → Required behaviour → **Acceptance criteria**
   (verifiable) → User-facing effect. (A collect spec groups these by cluster.)
 - **Invariants touched** — which `INTENT_DOC` non-negotiables this respects.
-- **Open questions** — surfaced, not buried.
 
-**Do NOT include** an implementation plan, task breakdown, or code — that's the
-orchestrator's job. Blurring this is how the roles bleed together.
+**A spec ships with its questions already resolved.** Resolving them with the user
+is exactly what a thinking session is *for* — so a finished spec carries **no "open
+questions" section**. If a question is genuinely open, the spec is not ready: either
+keep thinking until it's answered, or it's a real fork only the user can pick — put
+it to them now and fold their answer in before you hand over. (This is about the
+*artifact*, not the work: asking the user plenty of questions *while* you think is
+the job. The orchestrator may surface *new* questions later from its broader,
+code-level view of how this collides with other moving parts — that's expected and
+fine; it just isn't something your spec gets to ship unresolved.)
+
+**Do NOT include** an implementation plan, task breakdown, code, or an open-questions
+section — that's the orchestrator's job, or already-resolved thinking. Blurring this
+is how the roles bleed together.
 
 ### The `intent:` field — get this right
 
@@ -166,7 +182,8 @@ grader judges the shipped result against this exact sentence.
 - [ ] Scope AND out-of-scope are explicit.
 - [ ] Current-state claims are audited against real code (`code_snapshot:` filled).
 - [ ] `INTENT_DOC` invariants it touches are named.
-- [ ] Open questions surfaced; none that block are unseen by the user.
+- [ ] **No open questions in the spec** — every question was resolved with the user
+      during thinking; any real fork was put to them and their answer folded in.
 - [ ] No implementation plan / code leaked in.
 
 ---

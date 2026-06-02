@@ -26,11 +26,11 @@ planner ─briefs─▶ brief-inbox ─▶ think ─spec─▶ spec-inbox ─▶
 - **State is filesystem location.** A file's folder *is* its status — pending in a
   lane, or moved to `_archive/` when consumed. No database, no manifest to keep in
   sync.
-- **Three lanes, by reader:** `spec-inbox` (the orchestrator's — specs, orc-directed
-  memos, bounces), `brief-inbox` (the thinker's — briefs, review cards, and
-  planner-directed memos), and `collect-inbox` (think's collect-mode pile). Plus an
-  in-repo relay file (`docs/sessions/orc-relay.md`) for orchestrator-to-orchestrator
-  handover — a single file, not an inbox.
+- **Two lanes, by reader:** `spec-inbox` (the orchestrator's — specs, orc-directed
+  memos, bounces) and `brief-inbox` (the thinker's — briefs, review cards, and
+  planner-directed memos). Plus an in-repo relay file (`docs/sessions/orc-relay.md`)
+  for orchestrator-to-orchestrator handover — a single file, not an inbox. (`think`'s
+  collect shape is session-scoped and has no lane.)
 
 ## Three sessions, not six skills
 
@@ -154,12 +154,12 @@ you notice mid-day. Those had nowhere to land, so they interrupted a session or 
 lost. **Collect mode** is the missing low-friction spot — and it's a *shape of
 `think`*, not its own skill, because gathering bugs is something a thinker does.
 
-Its design is two phases on purpose. The **dump phase** stays out of your way — it
-records each item and does only seconds of background grouping, never an
-interrogation, because the moment capture costs effort you stop capturing. The pile
-*persists across sessions*, so you add to it over days. The **close phase**
-(`collect done`) is where the thinking finally happens: organize the pile, ask
-everything in one batch, emit a single batched spec, hand it over.
+Its design is two phases on purpose. The **capture phase** stays out of your way —
+it records each item and does only seconds of background grouping/research, never an
+interrogation, because the moment capture costs effort you stop capturing. The
+**synthesize phase** (`collect done`) is where the thinking finally happens, once,
+over everything captured: organize, resolve every question in one batch, emit a
+single comprehensive spec, hand it over.
 
 It skips the *brainstorm ceremony* deliberately — routing a one-line fix through a
 full design session is the friction collect exists to remove — but not the spec
@@ -167,9 +167,11 @@ contract: the batch spec carries a real per-cluster `intent:` + acceptance
 criteria like any other, and anything that turns out to need real design is peeled
 off as a *brief* instead of jammed in.
 
-> Decision: collect is a mode of `think` with a persistent pile, not a separate
-> skill. Making it its own skill (an earlier draft) was reversed — it added a seat
-> for something that's just a thing a thinker does.
+> Decision: collect is a mode of `think`, not a separate skill (an earlier draft
+> that made it its own skill was reversed). It is **session-scoped** — capture and
+> synthesize in one session, nothing persists. The 2.0.0 cross-session *persistent
+> pile* was retired in 2.1.0: persistence only bought mid-crash survival and cost a
+> whole file lifecycle to keep honest — not worth it for one human on one machine.
 
 ### Reading is pull-on-boot, and a read must be provable
 

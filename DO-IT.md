@@ -36,7 +36,6 @@ ARCH_DOCS:      docs/architecture/          # optional: living architecture map
 DEPLOY_CMD:     ./deploy.sh                 # how the orchestrator ships; "" if none
 SPEC_INBOX:     ~/.claude/spec-inbox        # orchestrator's lane (keep default)
 BRIEF_INBOX:    ~/.claude/brief-inbox       # thinker's lane — briefs + review cards (keep default)
-COLLECT_INBOX:  ~/.claude/collect-inbox     # think's collect-mode pile lane (keep default)
 RELAY_BATON:    docs/sessions/orc-relay.md  # in-repo; how one orchestrator hands to the next
 ORC_MODEL:      opus                        # orchestrator session model
 WORKER_MODEL:   sonnet                      # default sub-session model (floor)
@@ -51,17 +50,14 @@ one-time setup interview to write this block rather than failing on a bad path.
 ## The lanes
 
 State lives in **where a file sits**, not in any manifest (a shared mutable
-manifest would just be a second thing to keep in sync). Three inbox folders,
-split by who reads them, plus an in-repo relay file:
+manifest would just be a second thing to keep in sync). Two inbox folders, split
+by who reads them, plus an in-repo relay file:
 
 - **`SPEC_INBOX`** — the orchestrator's lane. Holds `*.spec.md` (actionable),
   `memo-*.md` (advisory context for orc), `*.bounced.md` (needs the human).
 - **`BRIEF_INBOX`** — the thinker's lane. Holds `*.brief.md`, `*.review.md` (a card
   the orchestrator wrote about a shipped spec, for a thinker to walk), `memo-*.md`
   (advisory context for the planner), and `triage-receipt.md`.
-- **`COLLECT_INBOX`** — `think`'s collect-mode pile. Holds `*.collecting.md`, the
-  one mutable work file: a thinker in collect mode appends small items to it across
-  sessions until it's closed into a spec.
 - **`RELAY_BATON`** (`docs/sessions/orc-relay.md`, in-repo) — how a saturated
   orchestrator hands its live run to a fresh orchestrator session. Not an inbox; a
   single file, overwritten each handover, committed with the work.
@@ -96,16 +92,16 @@ than hopeful:
 | Brief | `NNN-<slug>.brief.md` | planner | think | yes (brief counter) | draft only |
 | Claimed brief | `NNN-<slug>.brief.claimed.md` | think | human / orc | mirrors brief | adds `claimed_at:` |
 | Spec | `NNN-<slug>.spec.md` | think (via `handover` helper) | orc | yes (spec counter) | no |
-| Collecting | `NNN-<slug>.collecting.md` | think (collect mode) | think | yes (collect counter) | **yes** (appended to) |
 | Review card | `NNN-<slug>.review.md` | orc | think (review mode) | mirrors spec | no |
 | Memo | `memo-<topic>.md` | think / planner | orc (in `SPEC_INBOX`) / planner (in `BRIEF_INBOX`) | **no** | **yes** (`last_updated:`) |
 | Relay baton | `docs/sessions/orc-relay.md` | orc | next orc | no (single file) | overwritten per handover |
 | Bounce | `NNN-<slug>.bounced.md` | orc | human | mirrors spec | no |
 
-The **collecting** file is the one mutable work file: a thinker in collect mode
-appends to it across sessions until it's closed into a spec. The **review card**
+The **review card**
 mirrors the number of the spec it reviews (no separate counter) so the two are
-obviously paired. A **memo's** lane depends on its reader — orc-directed memos go
+obviously paired. (`think`'s **collect** shape keeps its running list in-session
+only — it's not an inbox message and never persists across sessions; see the `think`
+skill.) A **memo's** lane depends on its reader — orc-directed memos go
 in `SPEC_INBOX`, planner-directed memos in `BRIEF_INBOX`. The **relay baton** is
 not an inbox message — it's a single in-repo file one orchestrator leaves for the
 next (see "Handing over to the next orchestrator" in the `orc` skill).
@@ -144,10 +140,10 @@ only atomicity that matters here.
   (or judged it no longer applies) it `mv`s the memo to `_archive/` with a one-line
   reason. This decouples a memo's life from any spec, so it can neither rot
   unread nor get archived before it was used.
-- **Collecting → archived when the batch spec is emitted.** The accumulator stays
-  live (and appendable) in `COLLECT_INBOX` across as many `collect` sessions as it
-  takes you to gather the items. When you close it, `collect` writes the batched
-  spec to `SPEC_INBOX` and only then `mv`s the `*.collecting.md` to its `_archive/`.
+- **Collect → no lifecycle (it's session-scoped).** Collect has no inbox file and
+  no archive: the running list lives in the `think` session and is consumed into one
+  spec before the session ends (see the `think` skill). The only persisted artifact
+  is the spec it produces, which lives the normal spec lifecycle.
 - **Review card → archived when the thinker walks it.** `orc` writes one per
   shipped spec into `BRIEF_INBOX`. A `think` session in review mode walks it with
   you; on "happy" it archives the card, on "unhappy" it writes a corrective spec
@@ -264,22 +260,27 @@ is ready — neither is a separate skill you boot:
 - **Send a memo** → to `orc` (`SPEC_INBOX/memo-*.md`) or the planner
   (`BRIEF_INBOX/memo-*.md`): advisory context, never a work item.
 
-### Collect — the persistent small-stuff pile
+### Collect — capture many small items, synthesize one spec
 
 Not every item is worth a brainstorm. The steady drip of one-line bugs and nits
-needs somewhere to land *without* interrupting you. Collect mode is that spot:
+needs somewhere to land *without* interrupting you. Collect is that spot — a
+distinct interaction shape, the inverse of brainstorm: low-touch across many items,
+with the thinking **deferred** to a single synthesis pass at the end. It is
+**session-scoped** — capture and synthesize within the one session; nothing
+persists, no inbox, no counters:
 
-- **Dump (default).** You fire items; the thinker appends each to a
-  `*.collecting.md` pile in `COLLECT_INBOX` and does only *light* work — group,
-  dedupe, note the likely file/route, flag anything too big. It does **not**
-  interrogate you; one line of acknowledgement per item. The pile **persists across
-  sessions** (the one mutable work file), so you add to it today and tomorrow.
-- **Close (`collect done`).** The thinker re-reads the pile, groups it, peels
-  anything too big into a **brief** (not jammed into the batch), asks its
-  clarifying questions in **one batch**, writes **one batched spec** (per-cluster
-  `intent:` + acceptance criteria — same contract any spec meets), hands it over,
-  and archives the pile. Collect skips the brainstorm ceremony, not the spec
-  contract.
+- **Capture (default).** You fire items; the thinker records each in an in-session
+  working list and does only *light* work — group, dedupe, note the likely
+  file/route, light background research (read the named file, confirm the route),
+  flag anything too big. It does **not** interrogate you; one line of acknowledgement
+  per item. Deferring the questions is the whole point.
+- **Synthesize (`collect done` / "organize it").** The thinking happens once, over
+  everything captured: the thinker groups it, peels anything too big into a **brief**
+  (not jammed into the batch), **resolves its questions with you in one batch**,
+  writes **one comprehensive spec** (per-cluster `intent:` + acceptance criteria —
+  same contract any spec meets, including no open questions), and hands it over.
+  Collect skips the brainstorm ceremony, not the spec contract. If the session ends
+  before synthesis, the jots are lost — the accepted trade for zero lane machinery.
 
 ## The review loop — accounting for what shipped
 

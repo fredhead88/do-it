@@ -8,6 +8,42 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [2.1.0] — 2026-06-02
+
+Three refinements from live use of the v2 pipeline. No bootable-skill surface change
+(minor bump); `collect-inbox` lane retired.
+
+### Changed
+- **Collect is now session-scoped — no persistent pile, no lane.** Collect stays a
+  distinct `think` shape (low-touch capture across many small items, with the
+  thinking deferred to one synthesis pass that emits a single comprehensive spec),
+  but it now runs and finishes inside the one session it starts in. The running list
+  is an in-session working doc, not a `*.collecting.md` inbox file. **Why:** the only
+  thing cross-session persistence bought was surviving a mid-collect crash, and it
+  cost a whole file lifecycle to keep "honest" — net negative for one human on one
+  machine. This supersedes the 2.0.0 persistent pile *and* the per-item "discharge"
+  bookkeeping that briefly existed on the way here (both removed). If a session dies
+  mid-collect the jots are lost — the accepted trade.
+- **Specs ship with questions resolved — no "open questions" section.** Resolving
+  questions is what a thinking session is *for*, so the spec artifact no longer
+  carries built-in open questions; a genuinely-open question means keep thinking, or
+  put the fork to the user now and fold in the answer. (The orchestrator may still
+  raise *new* questions later from its broader, code-level view — that's expected.)
+  Removed the "Open questions" item from the spec structure and the readiness
+  self-check in `think`.
+- **Orc relay triggers on observable signals, not a guessed context %.** The relay
+  baton no longer keys on "~50% / ~70% used" — an orchestrator can't actually read
+  its own context fraction, so that threshold degraded into a vibe that biased toward
+  premature (expensive) handoffs. New rule: default posture is **keep working and
+  checkpoint the ledger as you go**; relay only on a real signal — an autocompact /
+  context-limit warning, repeated tool failures, visibly degraded output, or an
+  explicit user cue — and **do not self-estimate context fraction.**
+
+### Removed
+- The **`collect-inbox`** lane, the `*.collecting.md` message type, the collect
+  counter, and the discharge-map / `status: discharged` machinery. `setup.sh` no
+  longer creates a collect inbox.
+
 ## [2.0.0] — 2026-06-02
 
 Consolidated the pipeline around **three bootable sessions** (`planner` → `think`

@@ -8,14 +8,13 @@ SKILLS_SRC="$ROOT/skills"
 SKILLS_DST="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 SPEC_INBOX="${SPEC_INBOX:-$HOME/.claude/spec-inbox}"
 BRIEF_INBOX="${BRIEF_INBOX:-$HOME/.claude/brief-inbox}"
-COLLECT_INBOX="${COLLECT_INBOX:-$HOME/.claude/collect-inbox}"
 
 echo "DO-IT setup"
 echo "  skills  -> $SKILLS_DST"
-echo "  inboxes -> $SPEC_INBOX , $BRIEF_INBOX , $COLLECT_INBOX"
+echo "  inboxes -> $SPEC_INBOX , $BRIEF_INBOX"
 
-# 1. Inbox lanes (+ archives)
-mkdir -p "$SPEC_INBOX/_archive" "$BRIEF_INBOX/_archive" "$COLLECT_INBOX/_archive"
+# 1. Inbox lanes (+ archives). Collect is session-scoped — it has no lane.
+mkdir -p "$SPEC_INBOX/_archive" "$BRIEF_INBOX/_archive"
 
 # 2. Install skills (symlink so edits in the repo take effect live)
 mkdir -p "$SKILLS_DST"
