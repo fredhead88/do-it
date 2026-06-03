@@ -65,6 +65,30 @@ by who reads them, plus an in-repo relay file:
 Each lane has an `_archive/` subfolder for consumed items. `ls *.md` in a lane =
 what's still pending. Nothing is ever `rm`'d — finished items move to `_archive/`.
 
+### The build-status ledger (where a spec is between handed-over and accepted)
+
+File-location encodes which *lane* a spec is in, but not whether an archived spec was
+*built, deployed, or accepted* — that used to live only in the orchestrator's head, and
+specs fell through the seam (a held spec whose hold was silently released; a handed-over
+spec that never entered the build queue). The **build-status ledger** closes that seam:
+
+- **One file per spec** — `REPO_ROOT/docs/superpowers/ledger/<spec_id>.yml` — carrying a
+  `status:` (registered → planned → building → merged → shipped → accepted, plus held /
+  superseded) and an append-only `history:`. **`merged` is not done** — `shipped`
+  requires a *verified* deploy.
+- **Shared deploy-blockers** — `ledger/blockers/<id>.yml` — that specs reference by id
+  (`deploy_blocked_by:`) instead of copying, so one infra failure blocking N specs is one
+  object, cleared once.
+- **A generated view** — `ledger/OUTSTANDING.md`, rendered by `scripts/spec_ledger.py` —
+  answers "any specs we wrote but never built?" in one command.
+
+This is **not** the "shared mutable manifest" this protocol warns against: state is one
+field in each spec's *own* file (state-is-where-the-file-sits, applied per spec), and the
+rollup is *rendered*, never hand-edited, so it cannot drift. The ledger is written only by
+`orc` (the singleton that owns the repo); `handover` and `think` — which do no git — emit
+tiny inbox stubs (`*.register.yml`, `*.accept.yml`) that `orc` folds in on pickup, so
+there is exactly one writer per record and no clobbering.
+
 ### How items actually get picked up (it's pull, not push)
 
 There is no daemon and no message bus. Transfer happens because a **human launches
@@ -96,6 +120,10 @@ than hopeful:
 | Memo | `memo-<topic>.md` | think / planner | orc (in `SPEC_INBOX`) / planner (in `BRIEF_INBOX`) | **no** | **yes** (`last_updated:`) |
 | Relay baton | `docs/sessions/orc-relay.md` | orc | next orc | no (single file) | overwritten per handover |
 | Bounce | `NNN-<slug>.bounced.md` | orc | human | mirrors spec | no |
+| Register stub | `<spec_id>.register.yml` | handover | orc | mirrors spec | no |
+| Accept stub | `<spec_id>.accept.yml` | think (review) | orc | mirrors spec | no |
+| Ledger record | `ledger/<spec_id>.yml` (in repo) | orc only | human / `spec_ledger.py` | mirrors spec | yes (status + append-only history) |
+| Blocker record | `ledger/blockers/<id>.yml` (in repo) | orc only | `spec_ledger.py` | no | yes (open→resolved) |
 
 The **review card**
 mirrors the number of the spec it reviews (no separate counter) so the two are
