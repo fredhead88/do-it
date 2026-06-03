@@ -71,6 +71,15 @@ A handful of ideas do the real work:
   branches, git/deploy state, the next action — that a fresh `orc` reads and
   **reconciles against the actual tree** before continuing. The baton is a hint;
   the filesystem is the truth.
+- **A ledger that can't lie about "done."** Work vanishes in the seam between
+  "handed over" and "shipped" — a spec put on hold whose hold is quietly released,
+  or merged code stuck behind a broken deploy that still reads as finished. So every
+  spec gets one small status file that `orc` advances at each step, and `merged` is
+  never `shipped` (that takes a *verified* deploy). Held specs surface their reason;
+  deploy-blockers are shared objects, so one outage blocking ten specs is one line,
+  not ten. `scripts/spec_ledger.py` renders the whole picture — "anything we wrote
+  but never built?" in one command. It's per-spec files, not a manifest, and the
+  view is *generated*, so it can't drift.
 
 ## Quickstart
 
@@ -118,6 +127,8 @@ do-it/
 │   ├── think/        # stage 2 — the worker seat: brainstorm / review / collect / claim-brief
 │   ├── handover/     # helper think invokes to drop a spec in the inbox
 │   └── orc/          # stage 3 — build, grade, integrate, ship; review cards + relay
+├── scripts/
+│   └── spec_ledger.py  # build-status ledger: render OUTSTANDING.md + --check
 └── docs/DESIGN.md    # the full design rationale and the decisions behind it
 ```
 
