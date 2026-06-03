@@ -82,7 +82,11 @@ For each pending `*.review.md` (oldest-first, or the user's pick):
 2. **Walk the eyeball items** one pass; capture thumbs-up/down + a note each. You
    may open the named files/surfaces read-only to help — but never touch code.
 3. **Resolve:**
-   - **Happy** → `mv` the card to `BRIEF_INBOX/_archive/`. Done.
+   - **Happy** → record the acceptance in the build-status ledger, then archive the
+     card. You do **no git** — drop a stub `$SPEC_INBOX/NNN-<slug>.accept.yml`
+     (tmp-then-`mv`; fields `spec_id`, `accepted_at: <ISO>`, `note:`), which the
+     orchestrator folds to `status: accepted` on its next reconcile. Then `mv` the
+     card to `BRIEF_INBOX/_archive/`. Done.
    - **Unhappy** → write a **corrective spec** capturing exactly what missed
      (`intent:` = "the <feature> ship missed X; correct it so Y", `supersedes:`
      the original spec number, plus testable acceptance criteria), hand it over,

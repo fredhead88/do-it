@@ -51,13 +51,19 @@ orchestrator is a failed orchestrator.
    before 003"). A memo read silently is the failure mode. Never build from a memo;
    once you've folded its guidance in (or judged it moot), `mv` it to `_archive/`
    with a one-line reason — its life isn't tied to any spec.
-4. **Survey code state:** `git status`, `git branch`. You're the session closest
+4. **Ingest build-status ledger stubs** (and every turn after): for each
+   `$SPEC_INBOX/*.register.yml`, if no `LEDGER_DIR/<spec_id>.yml` exists, create it
+   (`status: registered`, copying the stub's fields) and commit; for each
+   `*.accept.yml`, advance the matching record to `accepted` (+ `accepted_at`).
+   Idempotent. Then archive the stub to `$SPEC_INBOX/_archive/` (never `rm`) and
+   acknowledge on the board. See `## The build-status ledger` below.
+5. **Survey code state:** `git status`, `git branch`. You're the session closest
    to HEAD — act like it.
-5. **Validate each spec against current code** before planning:
+6. **Validate each spec against current code** before planning:
    `git log <code_snapshot>..HEAD -- <target_paths>` to catch intervening commits.
    If a path the spec depends on is gone, an invariant is violated, or there are
    no testable criteria → it won't build (see "When a spec won't build").
-6. **Post the status board** and wait.
+7. **Post the status board** and wait.
 
 No second authorization gate: the human already committed when they ran
 `handover`. You pick specs up and work them; you don't ask "may I build this?".
@@ -171,6 +177,36 @@ the living docs that changed (`INTENT_DOC` if an
 invariant shifted; architecture/debt notes). Doing this as you go IS the "nothing
 falls through the cracks" function.
 
+## The build-status ledger (every transition, honestly)
+
+Where every spec sits between handed-over and accepted lives in
+`LEDGER_DIR/<spec_id>.yml` (one file per spec) + shared deploy-blockers in
+`LEDGER_DIR/blockers/<id>.yml`. The rollup `LEDGER_DIR/OUTSTANDING.md` is
+**generated** by `scripts/spec_ledger.py` — never hand-edited — so "any specs we
+wrote but never built?" is one command. It is not a manifest to keep in sync: state
+is one field in each spec's own file, the view is rendered, so it can't drift. Only
+you (the singleton orc) write it; `handover`/`think` emit inbox stubs you ingest.
+
+You advance status inline at the loop point where each transition happens — edit the
+record's `status` and append a `history:` entry (never rewrite a prior one):
+
+- plan written → `planned` (+ `plan_file`)
+- integration merged → `merged` (+ `shipped_sha`). **`merged` is NOT done** — it
+  renders *merged-undeployed / NOT LIVE* until a verified deploy.
+- **verified** deploy → `shipped` (+ `deployed_at`). Never on a merge alone.
+- put on hold → `held` (+ `held_reason`, required) — so a hold surfaces, not vanishes.
+- superseded by a corrective → `superseded` (+ `superseded_by`).
+- acceptance stub arrives → `accepted`.
+
+**Deploy-blockers are shared objects.** When a deploy is blocked, ensure a
+`blockers/<id>.yml` exists and set `deploy_blocked_by: <id>` on each affected record
+(they stay `merged`). When it clears: flip the one blocker to `resolved`, redeploy,
+advance the affected specs to `shipped` on verify. One edit clears N specs.
+
+**Close-out gate:** before calling a session clean, run `python scripts/spec_ledger.py
+--check` and re-render. If any row is merged-undeployed or held, the board's `LEDGER:`
+line MUST name it.
+
 ## No silent stalls (see DO-IT.md for the full rule)
 
 - **Bias to act, tuned by `DELICACY`.** `bold` → proceed on anything reversible,
@@ -202,11 +238,17 @@ PLAN: <feature> — N tasks
   done: …   in-flight: … (model, bg)   pending: …   blocked: — or <task + question>
 GIT: branch <name>, M worktrees live
 SHIP: <last deploy + verify result, or "none">
+LEDGER: ⛔ MERGED-UNDEPLOYED: N (blocker: <id> or —)   HELD: N   (— if clean)
 NEXT: <your next move, or what you need from the user>
 ```
 
-If nothing changed: one line — "Board unchanged — N in-flight." The ledger lives
-in the plan file on disk, not in this chat. Never re-dispatch an accepted task.
+If nothing changed: one line — "Board unchanged — N in-flight." The plan-file task
+ledger lives on disk, not in this chat. Never re-dispatch an accepted task.
+
+The `LEDGER:` line is **derived, not from memory** — run `python scripts/spec_ledger.py`
+and read off the merged-undeployed and held counts. You may NOT render a clean board
+while a merged-undeployed or held row exists without naming it there: a stuck deploy
+must never silently read as "done."
 
 ## When to relay (and when NOT to)
 

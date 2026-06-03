@@ -37,6 +37,7 @@ DEPLOY_CMD:     ./deploy.sh                 # how the orchestrator ships; "" if 
 SPEC_INBOX:     ~/.claude/spec-inbox        # orchestrator's lane (keep default)
 BRIEF_INBOX:    ~/.claude/brief-inbox       # thinker's lane — briefs + review cards (keep default)
 RELAY_BATON:    docs/sessions/orc-relay.md  # in-repo; how one orchestrator hands to the next
+LEDGER_DIR:     docs/superpowers/ledger      # in-repo; build-status ledger (one file per spec)
 ORC_MODEL:      opus                        # orchestrator session model
 WORKER_MODEL:   sonnet                      # default sub-session model (floor)
 DELICACY:       cautious                    # cautious | bold — see "Bias to act"

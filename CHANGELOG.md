@@ -8,6 +8,33 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [2.2.0] — 2026-06-03
+
+A durable **build-status ledger** that closes the seam between "handed over" and
+"shipped." Minor bump: additive across `handover` / `orc` / `think` + a new portable
+script; no existing surface removed. Why: `docs/2026-06-03-doit-build-status-ledger-design.md`.
+
+### Added
+- **Per-spec build-status records** at `LEDGER_DIR/<spec_id>.yml` — one file per spec
+  carrying a lifecycle `status` (registered → planned → building → merged → shipped →
+  accepted, plus held / superseded) and an append-only `history`. State stays
+  per-file (no manifest); the rollup is rendered, so it can't drift.
+- **`scripts/spec_ledger.py`** — renders `LEDGER_DIR/OUTSTANDING.md` (three read
+  buckets, deploy-blocker rollup, stale-merged tripwire) and `--check` validates
+  records. `DOIT_LEDGER_DIR` env override points it at any project's ledger.
+- **Shared deploy-blockers** at `LEDGER_DIR/blockers/<id>.yml`, referenced by specs
+  via `deploy_blocked_by` — one object per infra failure, cleared in one edit.
+- **Register / accept inbox stubs** (`*.register.yml`, `*.accept.yml`) so the
+  no-git `handover` and `think` sessions auto-register and accept specs; only the
+  singleton `orc` writes the committed ledger (one writer per record, no clobbering).
+- **`LEDGER_DIR`** added to the CONFIG block.
+
+### Changed
+- **`handover`** writes a register stub at handover; **`orc`** ingests stubs, advances
+  status at each loop point, handles deploy-blockers, and carries a mandatory `LEDGER:`
+  board line + close-out gate (`merged` never reads as `shipped` — shipped requires a
+  verified deploy); **`think`** writes an accept stub on a happy review walk.
+
 ## [2.1.0] — 2026-06-02
 
 Three refinements from live use of the v2 pipeline. No bootable-skill surface change

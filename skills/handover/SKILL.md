@@ -80,6 +80,24 @@ Confirm your file is there and non-empty. Other pending specs in the inbox are
 NORMAL — it's a queue, not a single slot. They're other handovers; leave them
 alone, just note the count.
 
+### Step 4b — Register the spec in the build-status ledger
+
+This is the spec's auto-registration moment, so it can't fall through the seam
+between "handed over" and "shipped." You do **no git** — just drop a tiny stub next
+to the spec; the orchestrator folds it into the committed ledger on pickup. Write
+`$SPEC_INBOX/NNN-<slug>.register.yml` (same `NNN-<slug>` as the spec, tmp-then-`mv`),
+pulling `title`/`intent` from the spec header:
+
+```yaml
+spec_id:        NNN-<slug>
+title:          <first content line of the spec>
+intent:         <the spec's intent: line, verbatim>
+handed_over_at: <ISO 8601, now>
+spec_file:      <path the orchestrator will commit the spec to>
+```
+
+One writer, one file — no clobbering. (See DO-IT.md → "The build-status ledger".)
+
 ### Step 5 — Tell the user, briefly
 
 One or two lines: the file landed at `<path>`, the inbox holds N pending spec(s),
