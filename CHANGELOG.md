@@ -8,6 +8,26 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [2.3.0] — 2026-06-04
+
+Sharper **orc close-out discipline**. Minor bump: additive to the `orc` skill only;
+no existing surface removed. Hardens the quality gate and the return-path handling
+that a high-volume session leans on.
+
+### Added
+- **Close-out gate (blind, two verdicts)** — every shipped spec gets a fresh blind
+  grader (never saw the build) returning a plain *matches-intent: yes/no/partial*
+  plus an INTENT.md-invariant check, before the spec is closed. On anything short of
+  "yes" the orc surfaces it loudly and fix-forwards rather than closing.
+- **Review card as a complete spec mirror** — the card written for the `/think`
+  acceptance walk now accounts for every component of the spec (intent verbatim,
+  what shipped, look-at URLs, eyeball questions, grader verdict, findings/caveats),
+  so acceptance is a checklist, not a re-derivation.
+- **`bounced` vs `rework` return paths** — explicit handling for work that comes
+  back: `bounced` (won't-build, → human) vs `rework` (shipped-but-corrective, → orc),
+  defined against DO-IT.md §3, so review-walk correctives re-enter the build lane
+  cleanly without losing the original ship's history.
+
 ## [2.2.0] — 2026-06-03
 
 A durable **build-status ledger** that closes the seam between "handed over" and
