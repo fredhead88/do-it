@@ -8,6 +8,16 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.2.1] — 2026-06-07
+
+### Fixed
+- **Manual-restart race:** if a handoff sentinel was pending and the user
+  manually `/clear` + `/orc`'d before the watcher's next tick, the watcher
+  would restart the pane again, wiping the fresh session. The orc skill's
+  arming step now clears stale sentinels for its own pane at boot (the
+  automated path always deletes the sentinel *before* restarting, so any
+  sentinel surviving into a new orc's boot is by definition stale).
+
 ## [3.2.0] — 2026-06-07
 
 Adds **relay-watch** — the automated orc baton loop. The last manual step in

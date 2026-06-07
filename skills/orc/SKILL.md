@@ -52,7 +52,11 @@ intent/architecture/health docs pristine.
 
 ## First moves (every session)
 
-0. **Arm the context watch:** `printf "PANE=%s\n" "$TMUX_PANE" > /tmp/orc-active`.
+0. **Arm the context watch:** `printf "PANE=%s\n" "$TMUX_PANE" > /tmp/orc-active;
+   grep -l "PANE=$TMUX_PANE" /tmp/orc-handoff-due-* 2>/dev/null | xargs -r rm -f`.
+   (The second command clears stale handoff sentinels for this pane — protects a
+   manually-restarted orc from being /clear'd by the watcher acting on the previous
+   generation's sentinel.)
    This tells the relay-watch hook (`relay-watch/orc-token-watch.py`, if installed —
    see `relay-watch/SETUP.md`) that this pane is the orchestrator; past the token
    threshold it will inject a handoff signal and the relay watcher cron will
