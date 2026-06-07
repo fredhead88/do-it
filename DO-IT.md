@@ -1,6 +1,6 @@
 # DO-IT — Pipeline Operating Protocol
 
-**Version:** 3.0.0 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
+**Version:** 3.1.0 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
 
 The single source of truth for how the spec pipeline works. Every role-skill
 (`think`, `spec-handover`, `orc`) reads this and obeys it — they do **not** restate its
@@ -80,6 +80,30 @@ completeness and re-verifies each row from the read-only seat **before** surfaci
 only the residual (can't-machine-check items + not-done dispositions) to the human.
 Human last, not first. A card that omits or contradicts the spec goes back to orc as
 `rework` (§3), never to the human.
+
+**Evidence-bound close-out gate (hard rule).** `shipped` is impossible until every
+`components:` row carries type-matching observed evidence from the deployed surface:
+
+- Each row carries `criterion_type: ui | backend`, `evidence:` (the observation), and
+  `evidence_type:` (must match the type — see below). The spec also declares
+  `surfaces:` listing which app surfaces it touched; orc augments from changed-files →
+  routes.
+- **UI criterion** → `evidence_type: screenshot+interaction_trace`. The close-out gate
+  **drives** the interaction (clicks, types, hovers) and records the observation. A
+  grep or code-reference is AUTO-FAIL — it cannot confirm rendered behaviour.
+- **Backend criterion** → `evidence_type: curl_status+body_excerpt`. A signed evidence
+  record `{url, status, body_sha256, body_excerpt}` is the artifact. This format is
+  shared with the standing verification-loop harness so both speakers read the same
+  evidence.
+- **Deterministic pre-gates run before any LLM judging:** (1) build passes, (2) every
+  route in `look_at:` returns HTTP 200, (3) at least one screenshot is non-blank. If
+  any pre-gate fails, the spec is rejected without calling the LLM.
+- **Regression subset:** the gate re-runs the prior-accepted criteria of every surface
+  named in `surfaces:` — a cheap targeted re-check, not the full ledger — so a
+  recurring breakage on a touched surface is caught before the new work is accepted.
+- **The gate stays build-blind.** The grader sub-session never saw the build, the diff,
+  or the builder's reasoning. It receives only the typed artifact. Feeding the
+  builder's explanation to the grader is gameable and defeats the independence invariant.
 
 **No quiet descope — the point of the system is to *do it*.** A component is `done`,
 or its `not-done` clears a hard bar: (a) the spec itself put it out of scope; (b) it's

@@ -1,3 +1,8 @@
 .DS_Store
 *.tmp
 _archive/
+__pycache__/
+*.pyc
+*.pyo
+verification-loop/node_modules/
+verification-loop/runs/

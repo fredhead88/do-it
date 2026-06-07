@@ -8,6 +8,38 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.1.0] — 2026-06-07
+
+Adds the **verification-loop harness** — a project-agnostic autonomous prod verifier
+that closes the gap between "orc says done" and "observed green on the running app."
+
+### Added
+- **`verification-loop/` harness** — Node.js + Playwright headless browser runner.
+  Detects new deploys via sha comparison, probes configured pages, assigns typed
+  evidence to each acceptance criterion, and judges cross-vendor (Codex primary,
+  Claude fallback). All project-specific values live in a single config file;
+  the harness itself has no hardcodes. See `verification-loop/SETUP.md` and
+  `verification-loop/config/README.md`.
+- **`skills/verification-loop/SKILL.md`** — the verifier skill. Documents the 8-step
+  tick, verdict taxonomy, durable state files, and cron/attended usage modes.
+- **Verifier-owned `verified/` namespace** in `spec_ledger.py` — verdicts written by
+  `spec_ledger.py verify` land in `LEDGER_DIR/verified/<spec_id>.yml`, a subdir the
+  builder's `set`/`register` commands never glob. The verifier is the only writer.
+- **`spec_ledger.py verify` subcommand** — `verify NNN-slug CONFIRMED --judge codex
+  --evidence <ref>` records a verdict with judge identity and evidence reference.
+  Invalid verdict tokens are rejected.
+- **Advisory flock (`fcntl.flock`)** on every record write — prevents lost updates
+  when concurrent tick processes write the same ledger file.
+- **`render()` derives done-ness from the verdict namespace** — shipped specs with a
+  CONFIRMED verdict render as verified; REJECTED verdicts surface visibly as failed.
+- **`observable_warnings()` heuristic in `--check`** — flags presence-phrased
+  acceptance criteria (e.g. "a button exists") that the verification loop cannot
+  observe. Soft warning only; does not block the check.
+- **Evidence-bound close-out gate** in `DO-IT.md` §2 — `shipped` requires type-matched
+  observed evidence per criterion (`screenshot+interaction_trace` for UI,
+  `curl_status+body_excerpt` for backend). Deterministic pre-gates run before any LLM
+  judging; the grader sub-session stays build-blind.
+
 ## [3.0.0] — 2026-06-07
 
 **Breaking.** Reconciles the public repo with the running instance it was extracted

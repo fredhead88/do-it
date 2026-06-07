@@ -26,12 +26,23 @@ mkdir -p "$SKILLS_DST"
 for stale in planner handover drop memo collect; do
   if [ -L "$SKILLS_DST/$stale" ]; then rm -f "$SKILLS_DST/$stale"; echo "  removed stale link: $stale"; fi
 done
-for d in think spec-handover orc; do
+for d in think spec-handover orc verification-loop; do
   ln -sfn "$SKILLS_SRC/$d" "$SKILLS_DST/$d"
   echo "  linked skill: $d"
 done
 
-# 3. CONFIG sanity check — refuse to claim "done" if placeholders remain
+# 3. Verification-loop harness: remind user to configure if not done yet
+VL_CONFIG="$ROOT/verification-loop/config"
+if [ ! -f "$VL_CONFIG/example.json" ] || ls "$VL_CONFIG"/*.json 2>/dev/null | grep -vq 'example.json'; then
+  :  # at least one project config exists — nothing to do
+else
+  echo
+  echo "  NOTE: verification-loop/config/ has only example.json."
+  echo "  Copy it to config/<your-project>.json and fill in your values."
+  echo "  Then: cd verification-loop && npm install"
+fi
+
+# 4. CONFIG sanity check — refuse to claim "done" if placeholders remain
 PLACEHOLDERS=$(grep -nE '/path/to/your/repo' "$ROOT/DO-IT.md" || true)
 if [ -n "$PLACEHOLDERS" ]; then
   echo

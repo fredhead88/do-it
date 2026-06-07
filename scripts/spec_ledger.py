@@ -24,13 +24,20 @@ Usage:
         --spec-file docs/do-it/specs/x.md [--source-brief N] [--by handover]
     python scripts/spec_ledger.py set NNN-slug <status> --by WHO \
         [--reason R] [--superseded-by ID] [--needs N] [--field key=value ...]
+
+    # record a verifier verdict (verifier-owned namespace, builder can't overwrite):
+    python scripts/spec_ledger.py verify NNN-slug CONFIRMED \
+        --judge codex --evidence runs/2026-01-01/evidence/c1-primary.json
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
+import re
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,6 +51,32 @@ _MIRROR_DIR = Path(
     os.environ.get("DOIT_MIRROR_DIR", REPO_ROOT / "docs" / "do-it" / "ledger")
 )
 OUTSTANDING_MD = _MIRROR_DIR / "OUTSTANDING.md"
+
+
+# Verifier-owned namespace — the builder's glob("*.yml") never touches this subdir.
+# VERIFIED_DIR is derived from LEDGER_DIR so tests can override it via DOIT_LEDGER_DIR.
+def _get_verified_dir() -> Path:
+    return LEDGER_DIR / "verified"
+
+
+VALID_VERDICT = {"CONFIRMED", "REJECTED"}
+
+
+@contextmanager
+def _record_lock(path: Path):
+    """Advisory flock on a per-record lockfile so concurrent same-role ticks
+    can't lose-update. Cross-role safety is already guaranteed by the separate
+    verified/ dir (A1); this covers intra-role races."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lockfile = path.with_suffix(path.suffix + ".lock")
+    fh = open(lockfile, "w")  # noqa: WPS515
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
+
 
 VALID_STATUS = {
     "registered",
@@ -164,6 +197,7 @@ def _line(rec: dict) -> str:
 
 
 def render(records: list[dict], include_all: bool) -> str:
+    verdicts = load_verdicts()
     needs_human = [
         r for r in records if r.get("needs_human") or r.get("status") == "unknown"
     ]
@@ -234,9 +268,20 @@ def render(records: list[dict], include_all: bool) -> str:
     if not awaiting:
         L.append("_None._")
     for r in awaiting:
+        sid = r.get("spec_id", "?")
+        v = verdicts.get(sid)
         card = r.get("review_card")
         suffix = f"  · card: {card}" if card else ""
-        L.append(f"- 🚀 {_line(r)}{suffix}")
+        if v and v.get("verdict") == "CONFIRMED":
+            L.append(
+                f"- ✅ {_line(r)} — **verified** (judge: {v.get('judge')}){suffix}"
+            )
+        elif v and v.get("verdict") == "REJECTED":
+            L.append(
+                f"- ❌ {_line(r)} — **REJECTED** (judge: {v.get('judge')}){suffix}"
+            )
+        else:
+            L.append(f"- 🚀 {_line(r)}{suffix}")
     L.append("")
 
     # --- accepted / superseded (only under --all, except a count) ---
@@ -264,7 +309,11 @@ def render(records: list[dict], include_all: bool) -> str:
 # the --check gate uses, so an invalid record can't be born.
 
 # status -> the field that must accompany it (enforced by validate()).
-_REASON_FIELD = {"held": "held_reason", "bounced": "bounce_reason", "rework": "rework_reason"}
+_REASON_FIELD = {
+    "held": "held_reason",
+    "bounced": "bounce_reason",
+    "rework": "rework_reason",
+}
 
 
 def _now_iso() -> str:
@@ -286,7 +335,9 @@ def _write_record(path: Path, rec: dict) -> None:
     LEDGER_DIR.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with tmp.open("w") as fh:
-        yaml.safe_dump(clean, fh, sort_keys=False, allow_unicode=True, default_flow_style=False)
+        yaml.safe_dump(
+            clean, fh, sort_keys=False, allow_unicode=True, default_flow_style=False
+        )
     os.replace(tmp, path)
 
 
@@ -323,7 +374,16 @@ def cmd_register(argv: list[str]) -> int:
     errs = validate([rec])
     if errs:
         return _die("refusing to write — " + "; ".join(errs))
-    _write_record(path, rec)
+    with _record_lock(path):
+        # re-read-modify-write inside the lock to avoid lost updates
+        if path.exists():
+            fresh = _load_yaml(path)
+            fresh.update({k: v for k, v in rec.items() if k != "history"})
+            fresh.setdefault("history", []).extend(
+                rec["history"][len(fresh.get("history", [])) :]
+            )
+            rec = fresh
+        _write_record(path, rec)
     print(f"registered {a.spec_id}")
     return 0
 
@@ -337,7 +397,10 @@ def cmd_set(argv: list[str]) -> int:
     ap.add_argument("--superseded-by", dest="superseded_by", help="for superseded")
     ap.add_argument("--needs", help="optional, for bounced")
     ap.add_argument(
-        "--field", action="append", default=[], metavar="KEY=VALUE",
+        "--field",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
         help="extra metadata, e.g. --field shipped_sha=abc --field review_card=x.review.md",
     )
     a = ap.parse_args(argv)
@@ -361,16 +424,125 @@ def cmd_set(argv: list[str]) -> int:
             return _die(f"--field must be KEY=VALUE, got {kv!r}")
         k, v = kv.split("=", 1)
         rec[k] = v
-    rec.setdefault("history", []).append(
-        {"at": _now_iso(), "status": a.status, "by": a.by}
-    )
+    new_entry = {"at": _now_iso(), "status": a.status, "by": a.by}
+    rec.setdefault("history", []).append(new_entry)
 
     errs = validate([rec])
     if errs:  # e.g. rework with no --reason, superseded with no --superseded-by
         return _die("refusing to write — " + "; ".join(errs))
-    _write_record(path, rec)
+
+    # Collect the scalar field updates (excluding history — merged separately).
+    updates = {k: v for k, v in rec.items() if k != "history"}
+    with _record_lock(path):
+        # Re-read inside the lock so concurrent writers don't lose each other's
+        # history entries (both may have read the pre-lock snapshot).
+        if path.exists():
+            rec = _load_yaml(path)
+            rec.update(updates)
+            rec.setdefault("history", []).append(new_entry)
+        _write_record(path, rec)
     print(f"{a.spec_id} → {a.status}")
     return 0
+
+
+# ----------------------------------------------------------------- verify (verifier-owned namespace)
+
+
+def _verified_path(spec_id: str) -> Path:
+    return _get_verified_dir() / f"{spec_id}.yml"
+
+
+def load_verdicts() -> dict[str, dict]:
+    """spec_id -> verdict record. Read-only mirror of the verifier namespace."""
+    out: dict[str, dict] = {}
+    vdir = _get_verified_dir()
+    if not vdir.exists():
+        return out
+    for path in sorted(vdir.glob("*.yml")):
+        rec = _load_yaml(path)
+        out[rec.get("spec_id", path.stem)] = rec
+    return out
+
+
+def _write_verdict(path: Path, rec: dict) -> None:
+    """Atomic write into the verified/ subdir."""
+    vdir = _get_verified_dir()
+    vdir.mkdir(parents=True, exist_ok=True)
+    clean = {k: v for k, v in rec.items() if not k.startswith("_")}
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w") as fh:
+        yaml.safe_dump(
+            clean, fh, sort_keys=False, allow_unicode=True, default_flow_style=False
+        )
+    os.replace(tmp, path)
+
+
+def cmd_verify(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="spec_ledger.py verify")
+    ap.add_argument("spec_id")
+    ap.add_argument("verdict")
+    ap.add_argument("--judge", required=True)  # codex | claude-fallback
+    ap.add_argument(
+        "--evidence", required=True
+    )  # path/ref to the typed evidence artifact
+    ap.add_argument(
+        "--criterion",
+        action="append",
+        default=[],
+        metavar="ID=VERDICT",
+        help="optional per-criterion verdicts",
+    )
+    a = ap.parse_args(argv)
+    if a.verdict not in VALID_VERDICT:
+        return _die(f"invalid verdict {a.verdict!r} (one of {sorted(VALID_VERDICT)})")
+    now = _now_iso()
+    path = _verified_path(a.spec_id)
+    rec = _load_yaml(path) if path.exists() else {"spec_id": a.spec_id, "history": []}
+    rec["verdict"] = a.verdict
+    rec["judge"] = a.judge
+    rec["evidence_ref"] = a.evidence
+    rec["at"] = now
+    if a.criterion:
+        crit = rec.setdefault("criteria", {})
+        for kv in a.criterion:
+            if "=" not in kv:
+                return _die(f"--criterion must be ID=VERDICT, got {kv!r}")
+            k, v = kv.split("=", 1)
+            crit[k] = v
+    rec.setdefault("history", []).append(
+        {"at": now, "verdict": a.verdict, "judge": a.judge}
+    )
+    with _record_lock(path):  # advisory flock — same as register/set
+        _write_verdict(path, rec)
+    print(f"{a.spec_id} verified -> {a.verdict}")
+    return 0
+
+
+# -------------------------------------------------------- observable-criterion heuristic
+
+_PRESENCE_RE = re.compile(
+    r"\b(exists?|is (?:present|implemented|added|available)|"
+    r"a [a-z-]+ (?:component|button|menu|card|field|page) (?:exists|is added))\b",
+    re.IGNORECASE,
+)
+_ACTION_HINT = re.compile(
+    r"\b(given|when|then|click|hover|type|select|navigat|renders?|displays?)\b",
+    re.IGNORECASE,
+)
+
+
+def observable_warnings(records: list[dict]) -> list[str]:
+    """Return soft warnings for presence-phrased (non-observable) acceptance criteria."""
+    out: list[str] = []
+    for rec in records:
+        sid = rec.get("spec_id", rec.get("_file", "?"))
+        for crit in rec.get("acceptance_criteria") or []:
+            text = str(crit)
+            if _PRESENCE_RE.search(text) and not _ACTION_HINT.search(text):
+                out.append(
+                    f"{sid}: non-observable criterion (presence-phrased): {text!r}"
+                )
+    return out
 
 
 # ------------------------------------------------------------------------- main
@@ -382,6 +554,8 @@ def main() -> int:
         return cmd_register(argv[1:])
     if argv and argv[0] == "set":
         return cmd_set(argv[1:])
+    if argv and argv[0] == "verify":
+        return cmd_verify(argv[1:])
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--render", action="store_true", help="render (default)")
@@ -403,6 +577,8 @@ def main() -> int:
             for e in errors:
                 print(f"  - {e}", file=sys.stderr)
             return 1
+        for w in observable_warnings(records):
+            print(f"  ~ {w}", file=sys.stderr)
         print(f"Ledger OK — {len(records)} record(s).")
         return 0
 

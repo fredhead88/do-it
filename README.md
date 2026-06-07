@@ -134,6 +134,38 @@ do-it/
 Each skill is a single `SKILL.md` and stays thin — it points at `DO-IT.md` for
 the shared rules instead of restating them, so the roles can't drift apart.
 
+## Verification Loop
+
+A standing autonomous reviewer that drives shipped work from "orc says done" to
+"verified green on prod." It runs headless against your deployed app, assigns typed
+evidence to each acceptance criterion in the spec, judges cross-vendor (Codex primary,
+Claude fallback), and loops to convergence — filing correctives for hollow specs,
+escalating taste calls, and never touching the build.
+
+Three core invariants:
+
+1. **Blind-but-watching.** The verifier never sees the build, the diff, or the
+   builder's reasoning — only the typed evidence artifact.
+2. **Evidence-type-locked.** A UI criterion requires a DOM or screenshot observation;
+   a grep is auto-fail. No criterion closes without observed, type-matched evidence.
+3. **Verifier owns the verdict.** Verdicts live in `~/.claude/ledger/verified/` — a
+   namespace the builder's `set`/`register` commands never touch.
+
+The harness is project-agnostic: all project-specific values live in a single
+`verification-loop/config/<project>.json`. To set it up:
+
+```bash
+cd verification-loop
+npm install
+cp config/example.json config/<your-project>.json
+# fill in prod_base, api_base, page_map, auth, and the path fields
+```
+
+Then run: `node tick.mjs --config <your-project> --dry-run --force`
+
+Full setup instructions: [`verification-loop/SETUP.md`](verification-loop/SETUP.md).
+Config field reference: [`verification-loop/config/README.md`](verification-loop/config/README.md).
+
 ## Design rationale
 
 The full reasoning — why one-shot sessions, why a filesystem inbox over a

@@ -1,0 +1,21 @@
+{
+  "prod_base": "https://your-app.example.com",
+  "api_base":  "https://your-app.example.com/api",
+  "api_key_env": "API_KEY",
+  "auth": {
+    "mode": "test_user",
+    "login_path": "/api/auth/login",
+    "user_env": "VERIFIER_USER",
+    "pass_env": "VERIFIER_PASS"
+  },
+  "page_map": {
+    "home": "/"
+  },
+  "verify_periods": ["primary"],
+
+  "repo_root":       "/path/to/your/repo",
+  "spec_ledger_py":  "/path/to/your/repo/scripts/spec_ledger.py",
+  "ledger_base":     "/home/youruser/.claude/ledger",
+  "python_bin":      "/path/to/your/venv/bin/python",
+  "version_file":    "/path/to/your/repo/.version.json"
+}
