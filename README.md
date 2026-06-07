@@ -16,26 +16,26 @@ If you drive Claude Code hard, you hit two walls:
    thinking and research have dead time — while one session researches, you could
    be feeding the next.
 
-DO-IT splits the work into **three stages**, each a thin Claude Code skill that
+DO-IT splits the work into **two session roles**, each a thin Claude Code skill that
 boots a session into a job:
 
-- **`planner`** *(stage 1, optional)* — triages a raw dump into discrete *briefs*.
-- **`think`** *(stage 2 — the worker seat)* — a read-only session where you sit and
-  turn intent into a *spec*. It has shapes (brainstorm, walk review cards, claim a
-  brief, collect small bugs) and hands its own work over. Run three or four at
-  once; by the time you circle back, one's ready. You're never idle.
-- **`orc`** *(stage 3)* — the orchestrator. Picks specs out of the inbox, fans out
-  parallel sub-sessions to build them, **grades the result with a fresh session
-  that never saw the build**, integrates, and ships — staying lean by pushing all
-  the heavy work to those sub-sessions. Singleton.
+- **`think`** *(the worker seat)* — a read-only session where you sit and turn intent
+  into a *spec*. It has shapes (brainstorm, walk review cards, **intake/triage a raw
+  dump**, collect small bugs) and hands its own work over. Run three or four at once;
+  by the time you circle back, one's ready. You're never idle.
+- **`orc`** *(the orchestrator)* — picks specs out of the inbox, fans out parallel
+  sub-sessions to build them, **grades the result with a fresh session that never saw
+  the build**, integrates, and ships — staying lean by pushing all the heavy work to
+  those sub-sessions. Singleton; the only session that commits.
 
 ```
-planner ─briefs─▶  think  ──spec──▶  spec-inbox  ──▶  orc  ──▶  plan ▶ fan out ▶ grade ▶ ship
-(stage 1)        (×N, the worker seat)  (a folder)     (one, owns the git tree)
+think  ──spec──▶  spec-inbox  ──▶  orc  ──▶  plan ▶ fan out ▶ grade ▶ ship
+(×N, the worker seat)  (a folder)     (one, owns the git tree)
 ```
 
-`handover` (drop a spec into the inbox — your commit moment) is a helper a `think`
-session invokes, not a separate seat you boot into.
+`spec-handover` (drop a spec into the inbox — your commit moment) is a helper a
+`think` session invokes, not a separate seat you boot into. (The old `planner` stage
+is gone — it folded into `think` as the intake/triage shape.)
 
 Sessions are **one-shot and disposable**. Nothing is ever resumed; no message
 loops back into a dead session. Anything loop-like routes through you. The inbox
@@ -72,14 +72,14 @@ A handful of ideas do the real work:
   **reconciles against the actual tree** before continuing. The baton is a hint;
   the filesystem is the truth.
 - **A ledger that can't lie about "done."** Work vanishes in the seam between
-  "handed over" and "shipped" — a spec put on hold whose hold is quietly released,
-  or merged code stuck behind a broken deploy that still reads as finished. So every
-  spec gets one small status file that `orc` advances at each step, and `merged` is
-  never `shipped` (that takes a *verified* deploy). Held specs surface their reason;
-  deploy-blockers are shared objects, so one outage blocking ten specs is one line,
-  not ten. `scripts/spec_ledger.py` renders the whole picture — "anything we wrote
-  but never built?" in one command. It's per-spec files, not a manifest, and the
-  view is *generated*, so it can't drift.
+  "handed over" and "shipped" — a spec put on hold whose hold is quietly released, or
+  merged code stuck behind a broken deploy that still reads as finished. So every spec
+  gets one small status record (`held` / `bounced` / `rework` / `merged` / `shipped` /
+  …) that `orc` advances at each step, and `merged` is never `shipped` (that takes a
+  *verified* deploy). Records live in the **bus** (`~/.claude/ledger/`) and are written
+  only through `spec_ledger.py register` / `set` — never hand-edited, so they can't get
+  malformed or skip a required field; the repo holds a *generated* mirror that can't
+  drift. One command answers "anything we wrote but never built?"
 
 ## Quickstart
 
@@ -93,7 +93,7 @@ cd do-it
 
 Then, in Claude Code:
 
-- Say **`think`** to spec something out. When it's done, **`handover`**.
+- Say **`think`** to spec something out. When it's done, **`spec-handover`**.
 - In another session, say **`orc`** to build whatever's waiting in the inbox.
 
 That's the whole core: **three skills + one shared protocol doc (`DO-IT.md`)**.
@@ -106,15 +106,15 @@ separate skills:
 - **Brainstorm** — design something new (or develop a claimed brief) → a spec.
 - **Review** — walk the orchestrator's review cards; archive the good, send back a
   corrective spec on anything that missed.
-- **Claim a brief** — work whatever the `planner` queued.
+- **Intake / triage** — sort a raw dump into topics; handle some now, park the rest
+  as lightweight briefs (this absorbs the old `planner` stage).
 - **Collect** — low-touch capture of many small bugs/nits in one session; on
   `collect done` it synthesizes them into one comprehensive spec. Session-scoped —
   nothing persists between sessions.
 
 And a thinker performs two handoffs itself (offered when the work is ready, not
-booted as their own skills): **hand over a spec** (to `orc`, via the `handover`
-helper) and **send a memo** (advisory context to `orc` or the `planner`, never a
-work item).
+booted as their own skills): **hand over a spec** (to `orc`, via the `spec-handover`
+helper) and **send a memo** (advisory context to `orc`, never a work item).
 
 ## How it's organized
 
@@ -123,13 +123,12 @@ do-it/
 ├── DO-IT.md          # the shared protocol — CONFIG block + all the rules
 ├── setup.sh          # creates the inboxes, links the skills, checks CONFIG
 ├── skills/
-│   ├── planner/      # stage 1 (optional) — triage a dump into briefs
-│   ├── think/        # stage 2 — the worker seat: brainstorm / review / collect / claim-brief
-│   ├── handover/     # helper think invokes to drop a spec in the inbox
-│   └── orc/          # stage 3 — build, grade, integrate, ship; review cards + relay
+│   ├── think/          # the worker seat: brainstorm / review / intake-triage / collect
+│   ├── spec-handover/  # helper think invokes to drop a spec in the inbox + ledger
+│   └── orc/            # build, grade, integrate, ship; review cards + relay
 ├── scripts/
-│   └── spec_ledger.py  # build-status ledger: render OUTSTANDING.md + --check
-└── docs/DESIGN.md    # the full design rationale and the decisions behind it
+│   └── spec_ledger.py  # build-status ledger: register/set writes, render, --check
+└── docs/DESIGN.md      # the full design rationale and the decisions behind it
 ```
 
 Each skill is a single `SKILL.md` and stays thin — it points at `DO-IT.md` for

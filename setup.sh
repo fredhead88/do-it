@@ -8,22 +8,25 @@ SKILLS_SRC="$ROOT/skills"
 SKILLS_DST="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 SPEC_INBOX="${SPEC_INBOX:-$HOME/.claude/spec-inbox}"
 BRIEF_INBOX="${BRIEF_INBOX:-$HOME/.claude/brief-inbox}"
+LEDGER_DIR="${DOIT_LEDGER_DIR:-$HOME/.claude/ledger}"
 
 echo "DO-IT setup"
 echo "  skills  -> $SKILLS_DST"
 echo "  inboxes -> $SPEC_INBOX , $BRIEF_INBOX"
+echo "  ledger  -> $LEDGER_DIR (bus; the repo holds a generated mirror)"
 
-# 1. Inbox lanes (+ archives). Collect is session-scoped — it has no lane.
-mkdir -p "$SPEC_INBOX/_archive" "$BRIEF_INBOX/_archive"
+# 1. Inbox lanes (+ archives) and the bus ledger. Collect is session-scoped — no lane.
+mkdir -p "$SPEC_INBOX/_archive" "$BRIEF_INBOX/_archive" "$LEDGER_DIR"
 
 # 2. Install skills (symlink so edits in the repo take effect live)
 mkdir -p "$SKILLS_DST"
-# `drop`, `memo`, and `collect` are no longer standalone skills — collect and memo
-# are now shapes/actions of `think`. Remove stale links from earlier installs.
-for stale in drop memo collect; do
-  if [ -L "$SKILLS_DST/$stale" ]; then rm -f "$SKILLS_DST/$stale"; echo "  removed stale link: $stale (folded into think)"; fi
+# `planner`, `handover`, `drop`, `memo`, `collect` are no longer standalone skills:
+# planner folded into `think` (intake/triage shape), `handover` is now `spec-handover`,
+# collect/memo are think shapes/actions. Remove stale links from earlier installs.
+for stale in planner handover drop memo collect; do
+  if [ -L "$SKILLS_DST/$stale" ]; then rm -f "$SKILLS_DST/$stale"; echo "  removed stale link: $stale"; fi
 done
-for d in planner think handover orc; do
+for d in think spec-handover orc; do
   ln -sfn "$SKILLS_SRC/$d" "$SKILLS_DST/$d"
   echo "  linked skill: $d"
 done

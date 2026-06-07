@@ -2,20 +2,28 @@
 """Spec build-status ledger — render + validate.
 
 The DO-IT pipeline's durable answer to "did we write any specs that never got
-built?". Reads one small fact-file per spec under docs/superpowers/ledger/ plus
-shared blocker records under docs/superpowers/ledger/blockers/, and produces a
-grouped, read-only view (OUTSTANDING.md). The view is GENERATED — never
-hand-edited — so it cannot drift from the per-spec facts.
+built?". Reads one small fact-file per spec from the BUS ledger
+(~/.claude/ledger/, override with DOIT_LEDGER_DIR) and produces a grouped,
+read-only view (OUTSTANDING.md) written into the repo mirror
+(docs/do-it/ledger/, override with DOIT_MIRROR_DIR). The view is GENERATED —
+never hand-edited — so it cannot drift from the per-spec facts.
 
-State lives in the per-spec files (consistent with DO-IT's "state is where the
-file sits"); this script only reads them and renders. The only file it writes is
-the generated OUTSTANDING.md.
+State lives in the per-spec files (consistent with DO-IT's "state is a status on
+the one index"); this script only reads them and renders. The only file it
+writes is the generated OUTSTANDING.md mirror.
 
 Usage:
     python scripts/spec_ledger.py            # render to stdout + write OUTSTANDING.md
     python scripts/spec_ledger.py --render   # (same as default)
     python scripts/spec_ledger.py --all      # include accepted/superseded in the printout
     python scripts/spec_ledger.py --check     # validate records; exit non-zero on any violation
+
+    # write a record (so nobody hand-edits YAML — the source of indentation /
+    # missing-field bugs). Both refuse to write anything that wouldn't pass --check:
+    python scripts/spec_ledger.py register NNN-slug --title T --intent I \
+        --spec-file docs/do-it/specs/x.md [--source-brief N] [--by handover]
+    python scripts/spec_ledger.py set NNN-slug <status> --by WHO \
+        [--reason R] [--superseded-by ID] [--needs N] [--field key=value ...]
 """
 
 from __future__ import annotations
@@ -29,13 +37,13 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-# LEDGER_DIR defaults to <repo>/docs/superpowers/ledger (the DO-IT CONFIG default);
-# override with the DOIT_LEDGER_DIR env var to point at any project's ledger.
-LEDGER_DIR = Path(
-    os.environ.get("DOIT_LEDGER_DIR", REPO_ROOT / "docs" / "superpowers" / "ledger")
+# Ledger MASTERS live in the bus (machine-global), overridable for tests.
+LEDGER_DIR = Path(os.environ.get("DOIT_LEDGER_DIR", Path.home() / ".claude" / "ledger"))
+# The generated mirror is committed into the repo.
+_MIRROR_DIR = Path(
+    os.environ.get("DOIT_MIRROR_DIR", REPO_ROOT / "docs" / "do-it" / "ledger")
 )
-BLOCKERS_DIR = LEDGER_DIR / "blockers"
-OUTSTANDING_MD = LEDGER_DIR / "OUTSTANDING.md"
+OUTSTANDING_MD = _MIRROR_DIR / "OUTSTANDING.md"
 
 VALID_STATUS = {
     "registered",
@@ -45,7 +53,10 @@ VALID_STATUS = {
     "shipped",
     "accepted",
     "held",
+    "bounced",
+    "rework",
     "superseded",
+    "retired",
     "unknown",
 }
 
@@ -56,6 +67,8 @@ OUTSTANDING_STATUSES = {
     "building",
     "merged",
     "held",
+    "bounced",
+    "rework",
     "unknown",
 }
 STALE_MERGED_HOURS = 24
@@ -81,17 +94,6 @@ def load_records() -> list[dict]:
         rec["_file"] = path.name
         out.append(rec)
     return out
-
-
-def load_blockers() -> dict[str, dict]:
-    blockers = {}
-    if not BLOCKERS_DIR.exists():
-        return blockers
-    for path in sorted(BLOCKERS_DIR.glob("*.yml")):
-        b = _load_yaml(path)
-        b["_file"] = path.name
-        blockers[b.get("id") or path.stem] = b
-    return blockers
 
 
 # --------------------------------------------------------------------- helpers
@@ -134,7 +136,7 @@ def _hours_since(dt: datetime | None) -> float | None:
 # --------------------------------------------------------------------- validate
 
 
-def validate(records: list[dict], blockers: dict[str, dict]) -> list[str]:
+def validate(records: list[dict]) -> list[str]:
     errors: list[str] = []
     for rec in records:
         sid = rec.get("spec_id", rec.get("_file", "?"))
@@ -143,19 +145,12 @@ def validate(records: list[dict], blockers: dict[str, dict]) -> list[str]:
             errors.append(f"{sid}: invalid status {status!r}")
         if status == "held" and not (rec.get("held_reason") or "").strip():
             errors.append(f"{sid}: status=held requires a non-empty held_reason")
+        if status == "bounced" and not (rec.get("bounce_reason") or "").strip():
+            errors.append(f"{sid}: status=bounced requires a non-empty bounce_reason")
+        if status == "rework" and not (rec.get("rework_reason") or "").strip():
+            errors.append(f"{sid}: status=rework requires a non-empty rework_reason")
         if status == "superseded" and not (rec.get("superseded_by") or "").strip():
             errors.append(f"{sid}: status=superseded requires superseded_by")
-        blk = rec.get("deploy_blocked_by")
-        if blk:
-            b = blockers.get(blk)
-            if b is None:
-                errors.append(
-                    f"{sid}: deploy_blocked_by={blk!r} points at a missing blocker"
-                )
-            elif b.get("status") == "resolved":
-                errors.append(
-                    f"{sid}: deploy_blocked_by={blk!r} points at an already-resolved blocker"
-                )
     return errors
 
 
@@ -168,7 +163,7 @@ def _line(rec: dict) -> str:
     return f"{sid} — {title}".rstrip(" —")
 
 
-def render(records: list[dict], blockers: dict[str, dict], include_all: bool) -> str:
+def render(records: list[dict], include_all: bool) -> str:
     needs_human = [
         r for r in records if r.get("needs_human") or r.get("status") == "unknown"
     ]
@@ -186,7 +181,7 @@ def render(records: list[dict], blockers: dict[str, dict], include_all: bool) ->
     L.append(
         "<!-- DO NOT EDIT — generated by scripts/spec_ledger.py. Edit the per-spec"
     )
-    L.append("     files in docs/superpowers/ledger/ and re-run the script. -->")
+    L.append("     files in ~/.claude/ledger/ and re-run the script. -->")
     L.append("")
     L.append("# Spec Build-Status — what's outstanding")
     L.append("")
@@ -204,55 +199,32 @@ def render(records: list[dict], blockers: dict[str, dict], include_all: bool) ->
             L.append(f"- {_line(r)}" + (f"  · {note}" if note else ""))
         L.append("")
 
-    # --- open blockers + their merged-undeployed rollup ---
-    open_blockers = {
-        bid: b for bid, b in blockers.items() if b.get("status") != "resolved"
-    }
-    if open_blockers:
-        L.append("## 🚧 Deploy blockers")
-        for bid, b in open_blockers.items():
-            blocked = [r for r in outstanding if r.get("deploy_blocked_by") == bid]
-            since = b.get("opened_at", "?")
-            L.append(
-                f"### [{bid}] {b.get('summary', '')}  — open since {since} "
-                f"(scope: {b.get('scope', '?')})"
-            )
-            if blocked:
-                L.append(
-                    f"_{len(blocked)} spec(s) merged-undeployed, all blocked on this:_"
-                )
-                for r in blocked:
-                    L.append(f"- ⛔ {_line(r)} — code merged, **NOT LIVE**")
-            else:
-                L.append("_No specs currently pointing at this blocker._")
-            L.append("")
-
     # --- outstanding ---
     L.append(f"## Outstanding ({len(outstanding)})")
     if not outstanding:
         L.append("_None._")
     for r in outstanding:
         status = r.get("status")
-        if status == "held":
+        if status == "bounced":
+            L.append(
+                f"- ⛔ {_line(r)} — **BOUNCED**: {r.get('bounce_reason', '(no reason!)')}"
+                + (f" · needs: {r['needs']}" if r.get("needs") else "")
+            )
+        elif status == "rework":
+            L.append(
+                f"- 🔁 {_line(r)} — **REWORK (→ orc)**: {r.get('rework_reason', '(no reason!)')}"
+            )
+        elif status == "held":
             L.append(
                 f"- ⏸ {_line(r)} — **HELD**: {r.get('held_reason', '(no reason!)')}"
             )
         elif status == "merged":
-            blk = r.get("deploy_blocked_by")
-            if blk:
-                L.append(
-                    f"- ⛔ {_line(r)} — code merged, **NOT LIVE** (blocked: {blk})"
-                )
+            hrs = _hours_since(_merged_at(r))
+            if hrs is not None and hrs > STALE_MERGED_HOURS:
+                days = round(hrs / 24, 1)
+                L.append(f"- ⚠ {_line(r)} — merged {days}d, **why isn't this live?**")
             else:
-                hrs = _hours_since(_merged_at(r))
-                if hrs is not None and hrs > STALE_MERGED_HOURS:
-                    days = round(hrs / 24, 1)
-                    L.append(
-                        f"- ⚠ {_line(r)} — merged {days}d, **no blocker — "
-                        f"why isn't this live?**"
-                    )
-                else:
-                    L.append(f"- ◐ {_line(r)} — merged, awaiting deploy")
+                L.append(f"- ◐ {_line(r)} — merged, awaiting deploy")
         else:
             L.append(f"- ○ {_line(r)} — {status}")
     L.append("")
@@ -284,10 +256,133 @@ def render(records: list[dict], blockers: dict[str, dict], include_all: bool) ->
     return "\n".join(L).rstrip() + "\n"
 
 
+# ------------------------------------------------------------------- write (helper)
+#
+# The ONLY supported way to create/advance a record. Sessions call these instead of
+# hand-editing YAML — which is what produced the indentation breakage and the
+# missing-superseded_by bugs. Every write is re-validated with the SAME validate()
+# the --check gate uses, so an invalid record can't be born.
+
+# status -> the field that must accompany it (enforced by validate()).
+_REASON_FIELD = {"held": "held_reason", "bounced": "bounce_reason", "rework": "rework_reason"}
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _record_path(spec_id: str) -> Path:
+    return LEDGER_DIR / f"{spec_id}.yml"
+
+
+def _die(msg: str) -> "int":
+    print(f"error: {msg}", file=sys.stderr)
+    return 1
+
+
+def _write_record(path: Path, rec: dict) -> None:
+    """Atomic, valid-YAML write (tmp-then-rename). Strips internal keys, keeps order."""
+    clean = {k: v for k, v in rec.items() if not k.startswith("_")}
+    LEDGER_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w") as fh:
+        yaml.safe_dump(clean, fh, sort_keys=False, allow_unicode=True, default_flow_style=False)
+    os.replace(tmp, path)
+
+
+def cmd_register(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="spec_ledger.py register")
+    ap.add_argument("spec_id")
+    ap.add_argument("--title", required=True)
+    ap.add_argument("--intent", required=True)
+    ap.add_argument("--spec-file", dest="spec_file", required=True)
+    ap.add_argument("--source-brief", dest="source_brief")
+    ap.add_argument("--by", default="handover")
+    a = ap.parse_args(argv)
+
+    path = _record_path(a.spec_id)
+    if path.exists():
+        return _die(f"{a.spec_id} already exists — use `set` to advance it")
+    now = _now_iso()
+    sb = a.source_brief
+    if sb is not None:
+        try:
+            sb = int(sb)
+        except ValueError:
+            pass
+    rec = {
+        "spec_id": a.spec_id,
+        "title": a.title,
+        "intent": a.intent,
+        "status": "registered",
+        "handed_over_at": now,
+        "spec_file": a.spec_file,
+        "source_brief": sb,
+        "history": [{"at": now, "status": "registered", "by": a.by}],
+    }
+    errs = validate([rec])
+    if errs:
+        return _die("refusing to write — " + "; ".join(errs))
+    _write_record(path, rec)
+    print(f"registered {a.spec_id}")
+    return 0
+
+
+def cmd_set(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="spec_ledger.py set")
+    ap.add_argument("spec_id")
+    ap.add_argument("status")
+    ap.add_argument("--by", required=True)
+    ap.add_argument("--reason", help="for held / bounced / rework")
+    ap.add_argument("--superseded-by", dest="superseded_by", help="for superseded")
+    ap.add_argument("--needs", help="optional, for bounced")
+    ap.add_argument(
+        "--field", action="append", default=[], metavar="KEY=VALUE",
+        help="extra metadata, e.g. --field shipped_sha=abc --field review_card=x.review.md",
+    )
+    a = ap.parse_args(argv)
+
+    if a.status not in VALID_STATUS:
+        return _die(f"invalid status {a.status!r} (one of {sorted(VALID_STATUS)})")
+    path = _record_path(a.spec_id)
+    if not path.exists():
+        return _die(f"no ledger record {a.spec_id} — use `register` first")
+    rec = _load_yaml(path)
+
+    rec["status"] = a.status
+    if a.status in _REASON_FIELD and a.reason:
+        rec[_REASON_FIELD[a.status]] = a.reason
+    if a.superseded_by:
+        rec["superseded_by"] = a.superseded_by
+    if a.needs:
+        rec["needs"] = a.needs
+    for kv in a.field:
+        if "=" not in kv:
+            return _die(f"--field must be KEY=VALUE, got {kv!r}")
+        k, v = kv.split("=", 1)
+        rec[k] = v
+    rec.setdefault("history", []).append(
+        {"at": _now_iso(), "status": a.status, "by": a.by}
+    )
+
+    errs = validate([rec])
+    if errs:  # e.g. rework with no --reason, superseded with no --superseded-by
+        return _die("refusing to write — " + "; ".join(errs))
+    _write_record(path, rec)
+    print(f"{a.spec_id} → {a.status}")
+    return 0
+
+
 # ------------------------------------------------------------------------- main
 
 
 def main() -> int:
+    argv = sys.argv[1:]
+    if argv and argv[0] == "register":
+        return cmd_register(argv[1:])
+    if argv and argv[0] == "set":
+        return cmd_set(argv[1:])
+
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--render", action="store_true", help="render (default)")
     ap.add_argument(
@@ -299,9 +394,8 @@ def main() -> int:
     args = ap.parse_args()
 
     records = load_records()
-    blockers = load_blockers()
 
-    errors = validate(records, blockers)
+    errors = validate(records)
 
     if args.check:
         if errors:
@@ -309,7 +403,7 @@ def main() -> int:
             for e in errors:
                 print(f"  - {e}", file=sys.stderr)
             return 1
-        print(f"Ledger OK — {len(records)} record(s), {len(blockers)} blocker(s).")
+        print(f"Ledger OK — {len(records)} record(s).")
         return 0
 
     # render mode (default)
@@ -319,11 +413,11 @@ def main() -> int:
         for e in errors:
             print(f"  - {e}", file=sys.stderr)
 
-    body = render(records, blockers, include_all=args.all)
-    LEDGER_DIR.mkdir(parents=True, exist_ok=True)
+    body = render(records, include_all=args.all)
+    _MIRROR_DIR.mkdir(parents=True, exist_ok=True)
     OUTSTANDING_MD.write_text(body)
     sys.stdout.write(body)
-    print(f"\n[wrote {OUTSTANDING_MD.relative_to(REPO_ROOT)}]", file=sys.stderr)
+    print(f"\n[wrote {OUTSTANDING_MD}]", file=sys.stderr)
     return 0
 
 

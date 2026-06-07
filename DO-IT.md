@@ -1,389 +1,187 @@
-# DO-IT — Shared Protocol
+# DO-IT — Pipeline Operating Protocol
 
-The single source of truth for the DO-IT pipeline. Every skill points here
-instead of restating the rules, so they can't drift apart. Read this once; the
-skills assume you know it.
+**Version:** 3.0.0 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
 
-DO-IT moves work from raw idea → organized topic → spec → built-and-shipped
-feature, across **separate, one-shot Claude Code sessions** on one machine that
-pass typed messages through a shared filesystem inbox.
-
-Three bootable sessions: **planner** (stage 1, optional), **think** (stage 2, the
-worker seat — several at once, in different shapes), **orc** (stage 3, singleton).
-
-```
-                        ┌─ shapes of THINK (stage 2, the worker seat) ─┐
-PLANNER ─briefs─▶ brief-inbox ─▶ │ brainstorm · review · collect-pile │ ─spec─▶ spec-inbox ─▶ ORC
- (stage 1)        ▲              └───────────────────────────────────┘                       (stage 3)
-                  │                                                                     plan→fan out→grade
-   review card ◀──┘── per shipped spec ◀──────────────────────────────────────────────── →integrate→ship
-   (think review: happy → archive · unhappy → corrective spec ─▶ spec-inbox)                     │
-                                                                                    orc-relay baton ─▶ next ORC
-   memo ─advisory─▶ orc or planner (context, never a work item)              (one orchestrator at a time)
-```
+The single source of truth for how the spec pipeline works. Every role-skill
+(`think`, `spec-handover`, `orc`) reads this and obeys it — they do **not** restate its
+rules. This is the *what* (always current); the *why* + decision log is `DESIGN.md`.
+When you change the pipeline, follow §7.
 
 ---
 
-## CONFIG — fill this in once per project
+## 0. CONFIG — fill in once per project
 
-The only place project-specific values live. `setup.sh` checks these are no
-longer placeholders. Edit the block, don't scatter paths through the skills.
+The only place project-specific values live; `setup.sh` checks `REPO_ROOT` is no longer
+a placeholder. Edit this block — don't scatter paths through the skills.
 
 ```yaml
 REPO_ROOT:      /path/to/your/repo          # the working tree the orchestrator owns
 INTENT_DOC:     docs/INTENT.md              # standing invariants; final arbiter of "done"
 ARCH_DOCS:      docs/architecture/          # optional: living architecture map
 DEPLOY_CMD:     ./deploy.sh                 # how the orchestrator ships; "" if none
+BUS_ROOT:       ~/.claude                   # machine-global; reachable from any worktree
 SPEC_INBOX:     ~/.claude/spec-inbox        # orchestrator's lane (keep default)
-BRIEF_INBOX:    ~/.claude/brief-inbox       # thinker's lane — briefs + review cards (keep default)
-RELAY_BATON:    docs/sessions/orc-relay.md  # in-repo; how one orchestrator hands to the next
-LEDGER_DIR:     docs/superpowers/ledger      # in-repo; build-status ledger (one file per spec)
-ORC_MODEL:      opus                        # orchestrator session model
+BRIEF_INBOX:    ~/.claude/brief-inbox       # thinker's lane — briefs + review cards
+LEDGER_DIR:     ~/.claude/ledger            # BUS: build-status masters, one file per spec
+LEDGER_MIRROR:  docs/do-it/ledger/OUTSTANDING.md  # in-repo: generated, committed snapshot
+SPEC_DOCS:      docs/do-it/specs/           # spec docs (plans: docs/do-it/plans/)
+RELAY_BATON:    docs/sessions/orc-relay.md  # in-repo: orchestrator-to-orchestrator handoff
+RENDERER:       python scripts/spec_ledger.py [--check]
+ORC_MODEL:      opus
 WORKER_MODEL:   sonnet                      # default sub-session model (floor)
 DELICACY:       cautious                    # cautious | bold — see "Bias to act"
 ```
 
-If `REPO_ROOT` or `INTENT_DOC` don't resolve, a booting skill drops into a
-one-time setup interview to write this block rather than failing on a bad path.
+## 1. The map
 
----
+```
+dump ─▶ think ─spec─▶ handover ─▶ spec-inbox + ledger ─▶ orc ─plan─▶ fan out ─▶ integrate ─▶ deploy
+        (intake/triage, brainstorm, review)                         (singleton; only committer)
+```
 
-## The lanes
+- **think** — read-only on code. Discovery/brainstorm → spec; review of shipped
+  work; **intake/triage** of a dump (absorbs the old planner). Reads `brief-inbox`,
+  writes specs + briefs + memos. Safe to run several at once.
+- **handover** — the atomic, self-verifying drop of a finished spec into the bus +
+  the ledger (§4). Writes `spec-inbox` + `ledger` only.
+- **orc** — the singleton integrator. The ONLY session that owns the working tree,
+  commits, and deploys. Reads everything; advances the ledger; renders the mirror.
 
-State lives in **where a file sits**, not in any manifest (a shared mutable
-manifest would just be a second thing to keep in sync). Two inbox folders, split
-by who reads them, plus an in-repo relay file:
+## 2. The message bus
 
-- **`SPEC_INBOX`** — the orchestrator's lane. Holds `*.spec.md` (actionable),
-  `memo-*.md` (advisory context for orc), `*.bounced.md` (needs the human).
-- **`BRIEF_INBOX`** — the thinker's lane. Holds `*.brief.md`, `*.review.md` (a card
-  the orchestrator wrote about a shipped spec, for a thinker to walk), `memo-*.md`
-  (advisory context for the planner), and `triage-receipt.md`.
-- **`RELAY_BATON`** (`docs/sessions/orc-relay.md`, in-repo) — how a saturated
-  orchestrator hands its live run to a fresh orchestrator session. Not an inbox; a
-  single file, overwritten each handover, committed with the work.
+Two lanes (by audience) + the ledger. State **is** file location — no manifest.
 
-Each lane has an `_archive/` subfolder for consumed items. `ls *.md` in a lane =
-what's still pending. Nothing is ever `rm`'d — finished items move to `_archive/`.
+| Type | File | Author | Reader |
+|------|------|--------|--------|
+| Brief (lightweight) | `NNN-<slug>.brief.md` | think | think |
+| Claimed brief | `NNN-<slug>.brief.claimed.md` | think | think |
+| Spec | `NNN-<slug>-spec.md` | handover | orc |
+| Memo (advisory, never a work item) | `memo-<topic>.md` | think | orc |
+| Review card (mirrors the spec) | `<slug>.review.md` | orc | think |
+| Triage account | shown in-session on multi-item dumps | think | human |
+| Ledger record (master) | `ledger/NNN-<slug>.yml` | handover→orc→think | all |
+| Relay baton | `docs/sessions/orc-relay.md` | orc | orc |
 
-### The build-status ledger (where a spec is between handed-over and accepted)
+**Naming — one rule, no exceptions:** `NNN-<slug>` — numbered, hyphens, **never a
+dot before the type** (`-spec.md`, never `.spec.md`; the inbox glob is `*-spec.md`,
+so a dotted name is silently never seen). Allocate `NNN = max(live + _archive) + 1`,
+zero-padded to 3. Both lanes are numbered so "001 shipped, where's 003?" is a
+followable list. (Pre-2026-06-03 specs keep their date-stem ids — grandfathered.)
 
-File-location encodes which *lane* a spec is in, but not whether an archived spec was
-*built, deployed, or accepted* — that used to live only in the orchestrator's head, and
-specs fell through the seam (a held spec whose hold was silently released; a handed-over
-spec that never entered the build queue). The **build-status ledger** closes that seam:
+**Atomic drop:** write `<name>.tmp` in the target dir, then rename into place; on a
+name collision the loser retries `NNN+1`. Readers ignore `*.tmp`.
 
-- **One file per spec** — `REPO_ROOT/docs/superpowers/ledger/<spec_id>.yml` — carrying a
-  `status:` (registered → planned → building → merged → shipped → accepted, plus held /
-  superseded) and an append-only `history:`. **`merged` is not done** — `shipped`
-  requires a *verified* deploy.
-- **Shared deploy-blockers** — `ledger/blockers/<id>.yml` — that specs reference by id
-  (`deploy_blocked_by:`) instead of copying, so one infra failure blocking N specs is one
-  object, cleared once.
-- **A generated view** — `ledger/OUTSTANDING.md`, rendered by `scripts/spec_ledger.py` —
-  answers "any specs we wrote but never built?" in one command.
+**The review card mirrors the spec (the close-out contract).** A card carries **one
+`components:` row per spec acceptance-criterion — no omissions** (done + how verified,
+or not-done + why). Two independent machine passes guard it before the human: orc
+blind-audits the card against the spec **in-session** (folded into its close-out
+grader — nothing ships with an incomplete card), and a `/think` review re-confirms
+completeness and re-verifies each row from the read-only seat **before** surfacing
+only the residual (can't-machine-check items + not-done dispositions) to the human.
+Human last, not first. A card that omits or contradicts the spec goes back to orc as
+`rework` (§3), never to the human.
 
-This is **not** the "shared mutable manifest" this protocol warns against: state is one
-field in each spec's *own* file (state-is-where-the-file-sits, applied per spec), and the
-rollup is *rendered*, never hand-edited, so it cannot drift. The ledger is written only by
-`orc` (the singleton that owns the repo); `handover` and `think` — which do no git — emit
-tiny inbox stubs (`*.register.yml`, `*.accept.yml`) that `orc` folds in on pickup, so
-there is exactly one writer per record and no clobbering.
+**No quiet descope — the point of the system is to *do it*.** A component is `done`,
+or its `not-done` clears a hard bar: (a) the spec itself put it out of scope; (b) it's
+irreversible without authorization; (c) it's hard-blocked on an external dependency
+orc can't obtain in-session; (d) it's a true fork only the human can decide. **Every
+other reason — "deferred", "wasn't sure", "gated on a refactor", "felt risky" — is not
+a disposition, it's unfinished work**, and the default is to build it. The three
+legitimate non-(a) reasons are all **loud** — they convert to a human question or a
+`held` blocker the human sees — so a whole section can never go missing behind a quiet
+"deferred." The blind close-out grader **enforces** this: it doesn't score the
+not-dones, it *challenges* the weak ones and sends them back as "build these," and orc
+completes them in-session before anything ships. Reversibility is what makes this
+safe to be aggressive — a wrong build is one `git revert`.
 
-### How items actually get picked up (it's pull, not push)
+**Deferrals surface first, the moment you open a thinker.** A legitimate not-done
+lives loud — as a `not-done` row on the shipped review card, or as `held` on the
+ledger — and the `/think` boot inventory **leads with these, by name, before the
+normal counts**, so a deferred piece can't hide inside the review queue until you
+notice the page never changed.
 
-There is no daemon and no message bus. Transfer happens because a **human launches
-a session** and that session's **first moves tell it to `ls` its lane and read
-what's pending.** So the honest guarantee is: a spec or memo is picked up *on the
-next boot of the session that reads that lane*, and mid-run *if that session
-re-scans* — not the instant it's written. Two rules make this dependable rather
-than hopeful:
+## 3. The index — one numbered list, statuses not files
 
-- **Re-scan every turn, not just at boot.** The reading session (`orc`, `planner`)
-  does a cheap `ls` of its lane at the top of each turn and surfaces new arrivals
-  on its status board. This is what lets a spec handed over *while orc is running*
-  get noticed the same afternoon instead of next boot.
-- **Reading is acknowledged, not silent.** A memo isn't "read" until the session
-  says, in its board/ledger, *how* it affected the plan ("memo-roadmap: noted —
-  sequencing X before Y"). An item read with no visible effect is the failure mode;
-  the acknowledgement is the receipt.
+The durable answer to "what's outstanding?" is the **ledger**: one
+`NNN-<slug>.yml` per spec in the bus (`~/.claude/ledger/`), **born `registered` at
+handover** (§4) so it's current the instant handover runs — no orc needed. Render
+any time: `python scripts/spec_ledger.py` (writes the committed mirror);
+validate with `--check`.
 
----
+**Lifecycle:** `registered → planned → building → merged → shipped → accepted`,
+plus `held`, `bounced`, `rework`, `superseded`, `retired`. Advance a record inline at
+the loop point where the transition happens; append (never rewrite) a `history:` entry.
 
-## Message types
+**`bounced` vs `rework` — two different rejections, two directions, one reader each.**
+Both mean "can't go forward as-is; returned to sender, loud, with a reason" — but who
+sent it and who fixes it differs, so they're two words:
+- **`bounced`** = **orc → human.** Orc can't build the spec (path gone, invariant
+  violated, no testable criteria, fundamentally ambiguous). The thinker is gone, so
+  this is a message to *you*; you re-spec or fix. (+ `bounce_reason`, `needs`.)
+- **`rework`** = **thinker → orc.** A `/think` review found the shipped card omits spec
+  criteria or orc's verification claims don't hold. The work isn't accepted; *orc*
+  rebuilds the card / builds the missing piece and re-ships. (+ `rework_reason`.)
 
-| Type | File | Written by | Read by | Numbered | Mutable |
-|------|------|-----------|---------|----------|---------|
-| Brief | `NNN-<slug>.brief.md` | planner | think | yes (brief counter) | draft only |
-| Claimed brief | `NNN-<slug>.brief.claimed.md` | think | human / orc | mirrors brief | adds `claimed_at:` |
-| Spec | `NNN-<slug>.spec.md` | think (via `handover` helper) | orc | yes (spec counter) | no |
-| Review card | `NNN-<slug>.review.md` | orc | think (review mode) | mirrors spec | no |
-| Memo | `memo-<topic>.md` | think / planner | orc (in `SPEC_INBOX`) / planner (in `BRIEF_INBOX`) | **no** | **yes** (`last_updated:`) |
-| Relay baton | `docs/sessions/orc-relay.md` | orc | next orc | no (single file) | overwritten per handover |
-| Bounce | `NNN-<slug>.bounced.md` | orc | human | mirrors spec | no |
-| Register stub | `<spec_id>.register.yml` | handover | orc | mirrors spec | no |
-| Accept stub | `<spec_id>.accept.yml` | think (review) | orc | mirrors spec | no |
-| Ledger record | `ledger/<spec_id>.yml` (in repo) | orc only | human / `spec_ledger.py` | mirrors spec | yes (status + append-only history) |
-| Blocker record | `ledger/blockers/<id>.yml` (in repo) | orc only | `spec_ledger.py` | no | yes (open→resolved) |
+**Everything is a status, never a separate file.** Every not-done state lives on the
+one list, so nothing can rot in a folder no one watches:
 
-The **review card**
-mirrors the number of the spec it reviews (no separate counter) so the two are
-obviously paired. (`think`'s **collect** shape keeps its running list in-session
-only — it's not an inbox message and never persists across sessions; see the `think`
-skill.) A **memo's** lane depends on its reader — orc-directed memos go
-in `SPEC_INBOX`, planner-directed memos in `BRIEF_INBOX`. The **relay baton** is
-not an inbox message — it's a single in-repo file one orchestrator leaves for the
-next (see "Handing over to the next orchestrator" in the `orc` skill).
+| Situation | Status (not a file) |
+|-----------|---------------------|
+| Handed over, not yet picked up | `registered` |
+| Orc can't build the spec → back to the human | `bounced` (+ `bounce_reason`, `needs`) — loud |
+| Review sent the shipped card back to orc (incomplete / claims don't hold) | `rework` (+ `rework_reason`) — loud |
+| Deliberately paused | `held` (+ `held_reason`) — loud |
+| Replaced by a corrective spec | `superseded` (+ `superseded_by`) |
+| Abandoned | `retired` |
 
-**Numbering is simple.** One person launches every session by hand, so there is
-no real write race to defend against. To allocate a number: `NNN = max(live +
-_archive in this lane) + 1`, zero-padded to 3. Each lane counts independently.
-Memos are never numbered — they're standing context, not work units. If you ever
-do see two files with the same number (you won't, in practice), the human picks;
-no machinery needed.
+**Ironclad tracking (the guarantee):** a handover can't confirm receipt — so pickup
+proof is the status *leaving* `registered`. A handed-over-but-unpicked spec stays
+`registered` forever and renders loud on the one list. Not-picked-up is impossible
+to hide; that — not the drop — is the guarantee.
 
-**Writing a file** is plain: write `<name>.tmp` in the target folder, then
-`mv` it to its real name (so no reader ever sees a half-written file). That's the
-only atomicity that matters here.
+**Task-list mirror (the dashboard):** orc keeps a harness task list at **spec
+level** (`registered/planned → pending`, `building/merged/shipped → in_progress`,
+`accepted → completed`), **rebuilt from the ledger on every boot**. Display only —
+the ledger is the source of truth; never the reverse.
 
----
+## 4. Handover — the atomic write
 
-## Lifecycle rules
+Handover is ONE self-verifying action. It either fully lands or errors loudly — no
+partial state:
 
-- **Brief → claimed at pickup, not archived.** When a thinker picks up a brief it
-  renames it to `NNN-<slug>.brief.claimed.md` and adds a `claimed_at:` timestamp.
-  It is archived only when the resulting spec is delivered. **Why:** a one-shot
-  thinker can die mid-thought (laptop sleeps, terminal closes). A claimed-but-not-
-  delivered brief left visible with a timestamp is the only way anyone can later
-  notice "brief 003 was claimed two hours ago and never produced a spec — that
-  session died." Archiving at pickup would erase that trace and silently lose the
-  work item. The orchestrator and the human both surface stale claims on boot.
-- **Spec → archived at delivery-close.** When the orchestrator finishes a spec it
-  `mv`s the spec to `SPEC_INBOX/_archive/`. That frozen copy is the
-  "as-handed-over" snapshot the close-out grader audits against.
-- **Memo → acknowledged on read, archived when folded in.** A memo is *not* tied to
-  a spec (it may map to none, or to several). The reading session (orc, or the
-  planner) does two things: on first read it **acknowledges** the memo — states in
-  its board/ledger how the guidance affects the plan, so a read is provable, not
-  silent — and once it has actually folded that guidance into a decision or plan
-  (or judged it no longer applies) it `mv`s the memo to `_archive/` with a one-line
-  reason. This decouples a memo's life from any spec, so it can neither rot
-  unread nor get archived before it was used.
-- **Collect → no lifecycle (it's session-scoped).** Collect has no inbox file and
-  no archive: the running list lives in the `think` session and is consumed into one
-  spec before the session ends (see the `think` skill). The only persisted artifact
-  is the spec it produces, which lives the normal spec lifecycle.
-- **Review card → archived when the thinker walks it.** `orc` writes one per
-  shipped spec into `BRIEF_INBOX`. A `think` session in review mode walks it with
-  you; on "happy" it archives the card, on "unhappy" it writes a corrective spec
-  *and* archives the card. An old un-walked `*.review.md` is a real signal — work
-  shipped that you never eyeballed — so it stays visible until walked.
+1. place the numbered spec into `spec-inbox/` as `NNN-<slug>-spec.md` (atomic, §2);
+2. write the ledger master `ledger/NNN-<slug>.yml` with `spec_id`, `title`,
+   `intent`, `status: registered`, `handed_over_at`, `spec_file`, and an opening
+   `history:` entry — **directly, no stub**;
+3. confirm both exist and are non-empty; on any failure, report the partial state.
 
----
+No git — handover writes the bus only; orc commits the spec doc + mirror.
 
-## Intent: the "why", recorded once and graded at the end
+## 5. State & archive
 
-Two different things are both called "intent". Keep them separate.
+File location is state: live in a lane = pending; `_archive/` = done/consumed.
+`_archive/` is **append-only — never `rm`**; the archived spec is the frozen
+as-handed-over snapshot the close-out grader audits against. Cross-lane lineage is
+the `source_brief:` header on a spec (one-way is enough).
 
-**Per-spec intent** — the goal of *this* work item. A required `intent:` header on
-every spec: 1–2 plain sentences saying *what success means and why*. It is
-**distinct from acceptance criteria**: criteria are the test, intent is the
-target. A feature can pass every criterion and still miss the point. `handover`
-refuses to drop a spec whose `intent:` is missing or empty. Write a real *why*
-("reps waste ~10 min/day scrolling, give them a date filter"), not a restated
-*what* ("add a date filter").
+## 6. Prime directives
 
-**Standing intent** — the project's invariants, in `INTENT_DOC`. The non-
-negotiables across all work. The orchestrator reads it every session and it is
-the **final arbiter of "done"** — a feature can satisfy a wrong spec perfectly.
+- **Throughput via parallelism.** Fan out as many workers as real dependencies
+  allow; the cap is dependencies, not a number. The integration lane is WIP=1.
+- **Lean orchestrator.** Push every read/build/analysis to a sub-session that
+  returns a tiny summary. A bloated orchestrator is a failed orchestrator.
+- **Nothing lost / no silent stalls.** Every not-done state is on the one list;
+  every wait is loud and timestamped; bias to act on anything a `git revert` undoes.
 
-**The close-out grader (the one real check).** The session that builds something
-is the worst judge of whether it's right — it spent its whole context trying to
-make it right. So before closing a spec, the orchestrator dispatches **one fresh
-sub-session that never saw the build**, handing it only three things:
+## 7. Evolving DO-IT (the self-hosting ritual)
 
-1. the frozen `intent:` (from the archived spec),
-2. the acceptance criteria,
-3. the actual diff that shipped.
+When you propose a pipeline change: **read this file** (the rule now) → **read
+`DESIGN.md`** (why it's this way, what was rejected) → **change this file, append a
+dated decision to `DESIGN.md`, and add a `CHANGELOG.md` entry + bump the version line
+above** (semver: new capability → minor, fix/clarification → patch, breaking
+role/bus/naming change → major). Never silently. The pipeline evolves the way you work.
 
-The grader returns a plain verdict — *"matches intent: yes/no, because…"* — and
-checks the shipped behavior against `INTENT_DOC` too. On "no", the orchestrator
-surfaces it loudly to the human. The grader is honest because it's blind, not
-because anyone launched it by hand; it's an internal sub-session like any worker.
+## 8. Why / decisions
 
----
-
-## No silent stalls
-
-The nightmare: you hand off work, walk away, and in the morning find the
-orchestrator asked a trivial question at minute two and sat idle all night while
-you thought it was building. The guards, in order:
-
-1. **Bias to act — tuned by `DELICACY`.** Most "questions" are really assumptions
-   the orchestrator should state and proceed on. The line:
-   - **`bold`** — proceed on anything reversible (undoable by `git revert` or a
-     re-run), stating one `ASSUMPTION:` line per guess.
-   - **`cautious`** (default) — proceed on small reversible mechanics, but **stop
-     and ask** when the spec is *valid but genuinely ambiguous about what you
-     want* (e.g. "add a filter" — by date? by status?). A spec passing every
-     validity check can still be unclear about intent; that case is worth a
-     question, because building the wrong thing confidently wastes your review
-     time even when the code is reversible.
-2. **Front-load questions in one batch** at intake — never a trickle discovered
-   hours apart.
-3. **A question blocks only its own task, never the session.** Everything not
-   gated by the answer keeps running. The session is "idle" only if *all* work
-   depends on the one unanswered question.
-4. **Blocked is LOUD.** When genuinely waiting, the top line of the status board
-   becomes `⛔ WAITING ON YOU since <HH:MM> — <question>`, and the orchestrator
-   fires a push notification if it can. No wait is ever silent.
-5. **The ledger is the morning-after truth.** Progress is written to the plan
-   file as it happens, including `BLOCKED at <time> on <question>`. The real state
-   is always auditable, never a vibe.
-
-**Guessed-vs-waited report.** At the end of a run the orchestrator states what it
-did: *"I guessed on these 3 things (flagged in the plan), I waited on these 2."*
-You read that and re-tune `DELICACY` next time. Your guessing is always visible,
-never buried.
-
----
-
-## When the orchestrator can't build a spec
-
-No retry machinery. A bounce is just a message to the human, because the thinker
-that wrote the spec is already gone (one-shot) — there's no dead session to send
-it back to.
-
-- **If you're in the session:** the orchestrator tells you plainly why the spec
-  won't build and what it'd need, and you decide. Most of the time you fix it on
-  the spot or wave it through with an assumption.
-- **If you're away:** it writes `NNN-<slug>.bounced.md` with the reason, so the
-  message survives. On its next boot the orchestrator **halts and surfaces any
-  un-acknowledged bounce** before processing past it — no silent rot.
-
-A spec won't build when: a path/route/table it depends on is gone; it violates a
-standing invariant unacknowledged; or it has no testable acceptance criteria.
-Everything else, the orchestrator proceeds on per the `DELICACY` rule above.
-
----
-
-## `think` has shapes, not siblings
-
-`think` (stage 2) is the one worker seat where a human sits; it is not a single
-fixed behaviour. You pick a **shape** at boot. Crucially these are shapes of one
-skill, not separate skills — an earlier draft split "collect" and "memo" into their
-own skills and that was a mistake: they're things a thinker *does*, not separate
-seats to sit in.
-
-- **Brainstorm** — discovery/research/probing on something new, or on a claimed
-  brief; converges on one approach → a spec.
-- **Review** — walk the orchestrator's review cards (see "The review loop").
-- **Claim a brief** — a thin entry to Brainstorm on whatever the planner queued.
-- **Collect** — the persistent small-stuff pile (below).
-
-And a thinker performs two **outbound handoffs** itself, offered whenever the work
-is ready — neither is a separate skill you boot:
-
-- **Hand over a spec** → to `orc`, via the `handover` helper (validates the header,
-  places it atomically). This is the commit moment.
-- **Send a memo** → to `orc` (`SPEC_INBOX/memo-*.md`) or the planner
-  (`BRIEF_INBOX/memo-*.md`): advisory context, never a work item.
-
-### Collect — capture many small items, synthesize one spec
-
-Not every item is worth a brainstorm. The steady drip of one-line bugs and nits
-needs somewhere to land *without* interrupting you. Collect is that spot — a
-distinct interaction shape, the inverse of brainstorm: low-touch across many items,
-with the thinking **deferred** to a single synthesis pass at the end. It is
-**session-scoped** — capture and synthesize within the one session; nothing
-persists, no inbox, no counters:
-
-- **Capture (default).** You fire items; the thinker records each in an in-session
-  working list and does only *light* work — group, dedupe, note the likely
-  file/route, light background research (read the named file, confirm the route),
-  flag anything too big. It does **not** interrogate you; one line of acknowledgement
-  per item. Deferring the questions is the whole point.
-- **Synthesize (`collect done` / "organize it").** The thinking happens once, over
-  everything captured: the thinker groups it, peels anything too big into a **brief**
-  (not jammed into the batch), **resolves its questions with you in one batch**,
-  writes **one comprehensive spec** (per-cluster `intent:` + acceptance criteria —
-  same contract any spec meets, including no open questions), and hands it over.
-  Collect skips the brainstorm ceremony, not the spec contract. If the session ends
-  before synthesis, the jots are lost — the accepted trade for zero lane machinery.
-
-## The review loop — accounting for what shipped
-
-The nightmare at the *other* end of the pipeline: `orc` ships 7–12 specs in a run
-and you lose the thread of what you even designed, then walk away hoping each one
-landed right. The fix is a short card per ship and a way to loop back.
-
-- **`orc` writes a review card per shipped spec.** At close-out — after grading,
-  integrating, and shipping — it drops a tiny, human-readable
-  `NNN-<slug>.review.md` (numbered after the spec) into `BRIEF_INBOX`. Contents:
-  one line of what shipped + the frozen `intent:`, where to look (routes / files /
-  preview URL), **N concrete things to eyeball**, and the blind grader's verdict.
-  It lands in the thinker's lane because the thinker is who reads it. **Every**
-  shipped spec gets one — so 10 overnight ships leave you 10 cards to sweep, and
-  nothing ships unaccounted-for.
-- **A `think` session walks the cards** in review mode. It pulls up each card,
-  walks you through the eyeball items, and:
-  - **happy** → archives the card;
-  - **unhappy** → writes a corrective spec to `SPEC_INBOX` (intent: "prior ship
-    missed X, correct it") and archives the card.
-
-That corrective spec re-enters `orc` like any other — the loop closes through you
-opening a `think` session, never a machine edge writing back into a dead one.
-This is the "anything loop-like routes through the human" invariant in action.
-
-## The orchestrator relay — passing a live run to the next orc
-
-An orchestrator saturates its context after a couple of specs, and only one orc may
-run at a time — so when it fills up you pass the whole run to a *fresh* orc, you
-don't spin up a second. A generic session-summary skill is the wrong tool; it isn't
-built to carry a live run. The orchestrator writes a purpose-built **relay baton**.
-
-The principle is DO-IT's own — **state is the filesystem.** The plan file already
-holds the ledger; the baton (`RELAY_BATON`, default `docs/sessions/orc-relay.md`)
-carries only the *session-volatile* bits the plan file doesn't: which workers were
-in-flight and as what branches (those sub-sessions die with the session that
-launched them), git/worktree state, deploy state, current blocks, and the single
-next action.
-
-- **Outgoing:** at the ~70% checkpoint, write the baton stamped `status: HANDED-OFF`
-  and stop. It commits with the rest of the work, so the run stays auditable.
-- **Incoming:** the next orc reads the baton in its first moves and **reconciles it
-  against the actual tree — the baton is a hint, the filesystem is truth.** For
-  each in-flight worker it checks the branch and *adopts the result if finished,
-  re-dispatches if not.* It confirms the prior session is closed, then stamps the
-  baton `RESUMED` so it can't be claimed twice. This is the only sanctioned way to
-  move a live run between sessions, and the `HANDED-OFF`→`RESUMED` handshake is what
-  keeps two orchestrators from ever overlapping.
-
-## Invariants (don't break these)
-
-- **One-shot sessions.** Nothing is ever resumed; no message edge writes back into
-  a dead session. Anything loop-like routes through the human.
-- **Lean orchestrator.** Its scarce resource is its own context. Every read,
-  build, and analysis is pushed to a sub-session that returns a tiny summary. A
-  bloated orchestrator is a failed orchestrator.
-- **Throughput via parallelism.** The orchestrator fans out as many concurrent
-  workers as real dependencies allow — no fixed cap — specifically so it keeps
-  pace with the rate specs arrive. (The *integration* lane is one-at-a-time; the
-  *worker* fan-out is not.)
-- **Singleton orchestrator.** Never two owning the same working tree. A live run
-  moves between sessions only via the relay baton's `HANDED-OFF`→`RESUMED`
-  handshake.
-- **Thinkers are read-only on code.** Only the orchestrator touches the tree.
-- **Three bootable sessions, not more.** planner (stage 1), think (stage 2, the
-  worker seat with shapes — brainstorm/review/claim-brief/collect), orc (stage 3).
-  Collect and memo are things a thinker *does*, not separate skills; `handover` is
-  an internal helper a thinker invokes, not a seat you boot into.
-- **Memos are never actionable** — advisory context only, structurally separate from
-  specs. They're acknowledged on read and archived once folded in (not coupled to a
-  spec). If you're writing "should build/add/change…", it's a spec, not a memo.
-- **Pull-on-boot, re-scanned each turn.** Nothing is event-driven; reading sessions
-  pick work up on boot and re-scan their lane every turn. A read is only real once
-  it's acknowledged in the board/ledger.
-- **Review cards are read-only artifacts** — `orc` writes them, the thinker walks
-  them; a card never carries requirements (an unhappy walk produces a *spec*).
-- **`INTENT_DOC` is the final arbiter of done** — above any single spec.
+The rationale, trade-offs, and dated decision log live in **`DESIGN.md`** (same
+folder). This file is the *what*; that one is the *why*.

@@ -8,6 +8,39 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.0.0] — 2026-06-07
+
+**Breaking.** Reconciles the public repo with the running instance it was extracted
+from, which had moved ahead. Three load-bearing changes mean v2.x users must re-run
+`setup.sh` and stop hand-dropping ledger stub files. Why:
+`docs/2026-06-07-v3-reconcile-plan.md`.
+
+### Changed (breaking)
+- **The ledger moved to the bus.** Build-status masters now live at
+  `~/.claude/ledger/` (machine-global, reachable from any worktree); the repo holds a
+  *generated* committed mirror (`docs/do-it/ledger/OUTSTANDING.md`). Previously the
+  ledger lived in-repo under `docs/superpowers/ledger/`.
+- **A write helper replaces the stub-file dance.** `spec_ledger.py register` (birth)
+  and `set` (every transition) are now the only supported way to write a record — each
+  re-validates before writing, so malformed or incomplete records can't be born. This
+  removes the `.register.yml` / `.accept.yml` stub files that the orchestrator used to
+  fold in. (Hand-edited YAML was the source of mixed-indent / missing-field corruption.)
+- **`handover` → `spec-handover`.** The skill was renamed; re-run `setup.sh`.
+
+### Removed (breaking)
+- **`planner` skill** — folded into `think` as its intake/triage shape.
+- **The deploy-blocker subsystem** — replaced by the `held` status + a reason.
+
+### Added
+- **`bounced` vs `rework` return paths** as first-class statuses, each with one
+  direction and one reader (`bounced` = won't-build → human; `rework` = shipped card
+  sent back → orc), enforced by the renderer.
+- **No quiet descope** — the blind close-out grader challenges weak `not-done`s
+  (forces them built in-session); only spec-out-of-scope or genuinely-loud
+  (human-question / `held`) survive.
+- **Deferrals surface first** in the `/think` boot inventory, so a shipped-but-partial
+  spec can't hide in the review queue.
+
 ## [2.3.0] — 2026-06-04
 
 Sharper **orc close-out discipline**. Minor bump: additive to the `orc` skill only;

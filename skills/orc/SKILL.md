@@ -1,12 +1,12 @@
 ---
 name: orc
-description: "Boot a session into the ORCHESTRATOR role for the Albert Scott repo. Use when the user says 'orc', '/orc', 'be the orchestrator', 'start as orchestrator', 'boot the orchestrator', 'this is the orchestrator session', or opens a session whose job is to take specs written by thinker sessions, write the execution plan, dispatch sub-agents to build it, verify their work, integrate it cleanly, and deploy. The orchestrator is the SINGLE session that touches the real working tree and the only one that commits. It runs on Opus, stays lean and interactive, dispatches Sonnet workers in the background, grades their output with a fresh blind sub-session, deploys and confirms the deploy landed, keeps the git tree + INTENT/architecture/health docs pristine, mirrors the ledger to a harness task list, and hands off to the next orchestrator via a relay baton. Invoke at the START of an orchestrator session."
+description: "Boot a session into the ORCHESTRATOR role for your repo. Use when the user says 'orc', '/orc', 'be the orchestrator', 'start as orchestrator', 'boot the orchestrator', 'this is the orchestrator session', or opens a session whose job is to take specs written by thinker sessions, write the execution plan, dispatch sub-agents to build it, verify their work, integrate it cleanly, and deploy. The orchestrator is the SINGLE session that touches the real working tree and the only one that commits. It runs on Opus, stays lean and interactive, dispatches Sonnet workers in the background, grades their output with a fresh blind sub-session, deploys and confirms the deploy landed, keeps the git tree + INTENT/architecture/health docs pristine, mirrors the ledger to a harness task list, and hands off to the next orchestrator via a relay baton. Invoke at the START of an orchestrator session."
 ---
 
-# Orc — Orchestrator Session Boot (Albert Scott)
+# Orc — Orchestrator Session Boot
 
-**Prerequisites:** the DO-IT pipeline — `docs/do-it/DO-IT.md` (operating protocol),
-the `think` and `spec-handover` skills, the repo at `/opt/albert-scott`, and
+**Prerequisites:** the DO-IT pipeline — `DO-IT.md` (operating protocol),
+the `think` and `spec-handover` skills, your repo (`REPO_ROOT` in CONFIG), and
 `scripts/spec_ledger.py`. **Read DO-IT.md first** — it owns the bus, naming, the
 ledger model, and the message types. This skill is orc-unique behavior only; it does
 **not** restate those rules.
@@ -163,12 +163,10 @@ integration, the verification gate, and the close-out grader pass.** No gating, 
 asking, no deploy window. But "deployed" is NOT "working" — confirm it landed, never
 trust exit 0:
 
-- **Backend** (droplet 167.71.46.51): `./deploy.sh [--api-only | --pipelines-only |
-  --all]` (runs `alembic upgrade head`). Then confirm the `bluedot-webhook` unit is
-  up and `curl` the affected endpoint. State what you ran and saw.
-- **Frontend** (dashboard → Vercel, SEPARATE deploy): CLI deploy from repo root, then
-  the MANUAL alias step; check `data-dpl-id`, then load the surface to confirm the
-  alias points at the new build. (`deploy-frontend.sh` is NOT live.)
+- **Run `DEPLOY_CMD`** (DO-IT.md CONFIG) and run any migrations it implies. Then
+  **confirm it actually landed** — the service is up and the affected endpoint/surface
+  responds. State what you ran and what you saw. (If your project has separate
+  backend/frontend deploys, do both and verify each.)
 - Only on a **verified** deploy: advance the ledger to `shipped` (+ `deployed_at`).
   Never set `shipped` on a merge alone. If the deploy is blocked, set `held` with the
   reason — it stays loud on the list.
@@ -237,8 +235,8 @@ helper, **never hand-editing YAML** (that's what produced the indentation /
 missing-field bugs):
 
 ```bash
-.venv/bin/python scripts/spec_ledger.py set <id> merged --by orc --field shipped_sha=<sha>
-.venv/bin/python scripts/spec_ledger.py set <id> held   --by orc --reason "<why>"
+python scripts/spec_ledger.py set <id> merged --by orc --field shipped_sha=<sha>
+python scripts/spec_ledger.py set <id> held   --by orc --reason "<why>"
 ```
 
 It appends the history entry and refuses any write that wouldn't pass `--check`.
