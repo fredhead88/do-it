@@ -52,6 +52,12 @@ intent/architecture/health docs pristine.
 
 ## First moves (every session)
 
+0. **Arm the context watch:** `printf "PANE=%s\n" "$TMUX_PANE" > /tmp/orc-active`.
+   This tells the relay-watch hook (`relay-watch/orc-token-watch.py`, if installed —
+   see `relay-watch/SETUP.md`) that this pane is the orchestrator; past the token
+   threshold it will inject a handoff signal and the relay watcher cron will
+   /clear + /orc this pane automatically once the baton is written. Skip silently
+   if `$TMUX_PANE` is empty (not in tmux — the relay loop is manual then).
 1. **Read ground truth:** `docs/sessions/last-handoff.md` (if continuing);
    `docs/INTENT.md` (the final arbiter of "done"); `docs/architecture/`
    (`architecture_dashboard.md`, `health_known_debt.md`, `decisions_technical.md`).
@@ -313,8 +319,9 @@ in-flight." Never re-dispatch an accepted task.
 forced handoff*, not a tidy stopping point — it forces a fresh `/orc` to pay full
 cold-start re-derivation. **Do NOT self-estimate context fraction** (you can't observe
 it; volume of work done is not a pressure signal). Relay only on an OBSERVABLE signal:
-an actual autocompact/context-limit warning; repeated tool failures or visibly
-degraded output; or an explicit user cue.
+an "ORC CONTEXT WATCH" message injected by the relay-watch hook (fires at its
+configured live-context threshold); an actual autocompact/context-limit warning;
+repeated tool failures or visibly degraded output; or an explicit user cue.
 
 When one fires, write the **relay baton** `docs/sessions/orc-relay.md` (tmp-then-
 rename). The plan file and the ledger already hold task + spec state (both durable);
@@ -333,6 +340,9 @@ blocked: <task + question, or —>
 next_action: <the single thing you were about to do>
 ```
 
-Then tell the user, one line: relay written, start a fresh `/orc`. **Never two
-orchestrators on one checkout** — outgoing stamps `HANDED-OFF`, incoming confirms and
-stamps `RESUMED` before doing anything.
+Then tell the user, one line: relay written. If the trigger was the ORC CONTEXT
+WATCH hook, **STOP after writing the baton — do not start new work and do not ask
+the user to restart**: the relay watcher cron will /clear this pane and boot a fresh
+`/orc` within ~2 minutes of the session going quiet. On any other trigger, tell the
+user to start a fresh `/orc`. **Never two orchestrators on one checkout** — outgoing
+stamps `HANDED-OFF`, incoming confirms and stamps `RESUMED` before doing anything.

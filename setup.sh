@@ -42,6 +42,13 @@ else
   echo "  Then: cd verification-loop && npm install"
 fi
 
+# 3b. Relay-watch: optional automated orc baton loop (hook + cron, manual install)
+if ! crontab -l 2>/dev/null | grep -q relay-watch.sh; then
+  echo
+  echo "  OPTIONAL: relay-watch (automated orc handoff/restart) is not installed."
+  echo "  See relay-watch/SETUP.md — one settings.json hook entry + one cron line."
+fi
+
 # 4. CONFIG sanity check — refuse to claim "done" if placeholders remain
 PLACEHOLDERS=$(grep -nE '/path/to/your/repo' "$ROOT/DO-IT.md" || true)
 if [ -n "$PLACEHOLDERS" ]; then

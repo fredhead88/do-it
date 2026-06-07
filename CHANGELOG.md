@@ -8,6 +8,29 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.2.0] — 2026-06-07
+
+Adds **relay-watch** — the automated orc baton loop. The last manual step in
+DO-IT ("hand over the baton", `/clear`, `/orc`) now runs itself.
+
+### Added
+- **`relay-watch/` component** — two halves across the session boundary:
+  `orc-token-watch.py` (a PostToolUse hook; reads the exact live context size
+  from the session transcript's `usage` blocks and past the threshold injects
+  a write-the-baton-and-STOP signal) and `relay-watch.sh` (a per-minute cron;
+  once the baton reads `HANDED-OFF`, the transcript is quiet, and the pane is
+  alive, it sends `/clear` + `/orc` via tmux). Project-agnostic: the sentinel
+  carries the repo path, so one cron line serves every DO-IT repo. Threshold
+  via `ORC_WATCH_THRESHOLD` (default 400k for 1M windows; ~160k on 200k
+  windows beats auto-compaction). See `relay-watch/SETUP.md`.
+
+### Changed
+- **`skills/orc/SKILL.md`** — new First-moves step 0 arms the context watch
+  (`/tmp/orc-active`, pane-scoped so thinkers and other sessions are never
+  touched); the ORC CONTEXT WATCH message is an official relay signal; on that
+  signal the orc stops after writing the baton instead of asking the user to
+  restart (the watcher does it).
+
 ## [3.1.0] — 2026-06-07
 
 Adds the **verification-loop harness** — a project-agnostic autonomous prod verifier

@@ -166,6 +166,22 @@ Then run: `node tick.mjs --config <your-project> --dry-run --force`
 Full setup instructions: [`verification-loop/SETUP.md`](verification-loop/SETUP.md).
 Config field reference: [`verification-loop/config/README.md`](verification-loop/config/README.md).
 
+## Relay-watch (v3.2): the orc never stops
+
+An orchestrator session eventually fills its context window, and the manual fix
+— tell it to hand over the baton, `/clear`, type `/orc` — made *you* the cron
+job. `relay-watch/` automates the loop: a PostToolUse hook measures the exact
+live context from the session transcript and, past a threshold, tells the orc
+to write its relay baton and stop; a per-minute cron then sends `/clear` +
+`/orc` to the same tmux pane once the baton lands and the session goes quiet.
+Each orc generation retires itself and boots its successor — the baton file
+carries the session-volatile state across, same as a manual relay.
+
+Scoped hard: the hook acts only in the pane the orc skill registers at boot,
+so thinker sessions and unrelated projects are never touched. One cron line
+serves all your DO-IT repos. Setup (a hook entry + a cron line):
+[`relay-watch/SETUP.md`](relay-watch/SETUP.md).
+
 ## Design rationale
 
 The full reasoning — why one-shot sessions, why a filesystem inbox over a
