@@ -134,3 +134,21 @@ def test_cmd_verify_legacy_positional_still_works(monkeypatch, tmp_path, capsys)
     assert rc == 0
     rec = yaml.safe_load((sl._verified_path("100-x")).read_text())
     assert rec["verdict"] == "CONFIRMED"
+
+
+def test_cmd_set_refuses_accepted(monkeypatch, tmp_path, capsys):
+    sl = _load(monkeypatch, tmp_path)
+    sl.cmd_register(["100-x", "--title", "T", "--intent", "I", "--spec-file", "f.md"])
+    capsys.readouterr()
+    rc = sl.cmd_set(["100-x", "accepted", "--by", "orc"])
+    err = capsys.readouterr().err
+    assert rc == 1 and "computed-only" in err
+
+
+def test_cmd_set_other_status_still_works(monkeypatch, tmp_path, capsys):
+    sl = _load(monkeypatch, tmp_path)
+    sl.cmd_register(["100-x", "--title", "T", "--intent", "I", "--spec-file", "f.md"])
+    capsys.readouterr()
+    rc = sl.cmd_set(["100-x", "planned", "--by", "orc"])
+    capsys.readouterr()
+    assert rc == 0

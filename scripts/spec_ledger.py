@@ -620,6 +620,11 @@ def cmd_set(argv: list[str]) -> int:
 
     if a.status not in VALID_STATUS:
         return _die(f"invalid status {a.status!r} (one of {sorted(VALID_STATUS)})")
+    if a.status == "accepted":
+        return _die(
+            "accepted is computed-only — it is derived from shipped ∧ a CONFIRMED "
+            "prod verdict (see effective_status); do not set it by hand"
+        )
     path = _record_path(a.spec_id)
     if not path.exists():
         return _die(f"no ledger record {a.spec_id} — use `register` first")
