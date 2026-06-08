@@ -16,24 +16,26 @@
 #   ORC_QUIET_SECS  — seconds of transcript silence required (default 45)
 set -u
 
+ROLE="${ROLE:-orc}"
+BOOT_CMD="${ROLE_BOOT_CMD:-/$ROLE}"
 QUIET_SECS="${ORC_QUIET_SECS:-45}"
 DRY="${ORC_WATCH_DRY:-0}"
-LOG=/tmp/orc-relay-watch.log
-LOCK=/tmp/orc-relay-watch.lock
+LOG="/tmp/${ROLE}-relay-watch.log"
+LOCK="/tmp/${ROLE}-relay-watch.lock"
 
 exec 9>"$LOCK"
 flock -n 9 || exit 0
 
 ts() { date -u +%FT%TZ; }
 
-for sentinel in /tmp/orc-handoff-due-*; do
-  [ -e "$sentinel" ] || exit 0
+for sentinel in /tmp/${ROLE}-handoff-due-*; do
+  [ -e "$sentinel" ] || continue
 
   PANE="" SESSION_ID="" TRANSCRIPT="" CWD="" CONTEXT=""
-  # shellcheck disable=SC1090  # our own key=value file, written by the hook
+  # shellcheck disable=SC1090
   . "$sentinel"
 
-  RELAY="${ORC_RELAY_FILE:-$CWD/docs/sessions/orc-relay.md}"
+  RELAY="${ORC_RELAY_FILE:-$CWD/docs/sessions/${ROLE}-relay.md}"
 
   # 1. Baton actually written? (the skill stamps RESUMED on pickup, so
   #    HANDED-OFF here can only mean this handoff is pending)
@@ -56,13 +58,13 @@ for sentinel in /tmp/orc-handoff-due-*; do
   fi
 
   if [ "$DRY" = "1" ]; then
-    echo "$(ts) DRY RUN: would /clear + /orc pane $PANE (context was ${CONTEXT:-?})" >>"$LOG"
+    echo "$(ts) DRY RUN: would /clear + $BOOT_CMD pane $PANE (context was ${CONTEXT:-?})" >>"$LOG"
     continue
   fi
 
-  echo "$(ts) restarting orc in pane $PANE (session $SESSION_ID, context ${CONTEXT:-?})" >>"$LOG"
+  echo "$(ts) restarting $ROLE in pane $PANE (session $SESSION_ID, context ${CONTEXT:-?})" >>"$LOG"
   tmux send-keys -t "$PANE" "/clear" Enter
   sleep 6
-  tmux send-keys -t "$PANE" "/orc" Enter
+  tmux send-keys -t "$PANE" "$BOOT_CMD" Enter
   rm -f "$sentinel"
 done

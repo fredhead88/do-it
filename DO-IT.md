@@ -1,6 +1,6 @@
 # DO-IT — Pipeline Operating Protocol
 
-**Version:** 3.5.0 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
+**Version:** 3.6.0 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
 
 The single source of truth for how the spec pipeline works. Every role-skill
 (`think`, `spec-handover`, `orc`) reads this and obeys it — they do **not** restate its
@@ -36,16 +36,22 @@ DELICACY:       cautious                    # cautious | bold — see "Bias to a
 
 ```
 dump ─▶ think ─spec─▶ handover ─▶ spec-inbox + ledger ─▶ orc ─plan─▶ fan out ─▶ integrate ─▶ deploy
-        (intake/triage, brainstorm, review)                         (singleton; only committer)
+        (intake/triage, brainstorm)                               (singleton; only committer)
+                                                                              │
+                                                                  rev (review twin, read-only)
 ```
 
-- **think** — read-only on code. Discovery/brainstorm → spec; review of shipped
-  work; **intake/triage** of a dump (absorbs the old planner). Reads `brief-inbox`,
-  writes specs + briefs + memos. Safe to run several at once.
+- **think** — read-only on code. Discovery/brainstorm → spec; **intake/triage** of a
+  dump (absorbs the old planner). Reads `brief-inbox`, writes specs + briefs + memos.
+  Safe to run several at once.
 - **handover** — the atomic, self-verifying drop of a finished spec into the bus +
   the ledger (§4). Writes `spec-inbox` + `ledger` only.
 - **orc** — the singleton integrator. The ONLY session that owns the working tree,
   commits, and deploys. Reads everything; advances the ledger; renders the mirror.
+- **rev** — the standing reviewer (orc's twin). Drives the verification loop, reads
+  rendered-page evidence, writes per-criterion verdicts to the verifier namespace,
+  files correctives. Read-only on code; never commits; never authors specs. Self-relays
+  on its own `ROLE=rev` watcher.
 
 ## 2. The message bus
 
@@ -57,7 +63,7 @@ Two lanes (by audience) + the ledger. State **is** file location — no manifest
 | Claimed brief | `NNN-<slug>.brief.claimed.md` | think | think |
 | Spec | `NNN-<slug>-spec.md` | handover | orc |
 | Memo (advisory, never a work item) | `memo-<topic>.md` | think | orc |
-| Review card (mirrors the spec) | `<slug>.review.md` | orc | think |
+| Review card (mirrors the spec) | `<slug>.review.md` | orc | rev |
 | Triage account | shown in-session on multi-item dumps | think | human |
 | Ledger record (master) | `ledger/NNN-<slug>.yml` | handover→orc→think | all |
 | Relay baton | `docs/sessions/orc-relay.md` | orc | orc |
@@ -87,11 +93,12 @@ old "loser retries `NNN+1`" dance is gone — `next-num` hands out distinct numb
 
 **The review card mirrors the spec (the close-out contract).** A card carries **one
 `components:` row per spec acceptance-criterion — no omissions** (done + how verified,
-or not-done + why). Two independent machine passes guard it before the human: orc
-blind-audits the card against the spec **in-session** (folded into its close-out
-grader — nothing ships with an incomplete card), and a `/think` review re-confirms
-completeness and re-verifies each row from the read-only seat **before** surfacing
-only the residual (can't-machine-check items + not-done dispositions) to the human.
+or not-done + why). Two independent passes guard it before the human: orc blind-audits
+the card against the spec **in-session** (folded into its close-out grader — nothing
+ships with an incomplete card), and the **executable verifier** (driven by `rev`) runs
+the per-criterion verdict — `rev` spot-checks the residual (taste, layout, interactions
+the machine can't fully judge) and files correctives to orc where needed. Closure is the
+derived `accepted` (shipped ∧ CONFIRMED). The thinker is no longer in the closure path.
 Human last, not first. A card that omits or contradicts the spec goes back to orc as
 `rework` (§3), never to the human.
 
@@ -156,9 +163,10 @@ sent it and who fixes it differs, so they're two words:
 - **`bounced`** = **orc → human.** Orc can't build the spec (path gone, invariant
   violated, no testable criteria, fundamentally ambiguous). The thinker is gone, so
   this is a message to *you*; you re-spec or fix. (+ `bounce_reason`, `needs`.)
-- **`rework`** = **thinker → orc.** A `/think` review found the shipped card omits spec
-  criteria or orc's verification claims don't hold. The work isn't accepted; *orc*
-  rebuilds the card / builds the missing piece and re-ships. (+ `rework_reason`.)
+- **`rework`** = **rev → orc.** The `rev` reviewer (or the executable verifier) found
+  the shipped card omits spec criteria or orc's verification claims don't hold. The work
+  isn't accepted; *orc* rebuilds the card / builds the missing piece and re-ships.
+  (+ `rework_reason`.)
 
 **Everything is a status, never a separate file.** Every not-done state lives on the
 one list, so nothing can rot in a folder no one watches:
@@ -167,7 +175,7 @@ one list, so nothing can rot in a folder no one watches:
 |-----------|---------------------|
 | Handed over, not yet picked up | `registered` |
 | Orc can't build the spec → back to the human | `bounced` (+ `bounce_reason`, `needs`) — loud |
-| Review sent the shipped card back to orc (incomplete / claims don't hold) | `rework` (+ `rework_reason`) — loud |
+| rev / verifier sent the shipped card back to orc (incomplete / claims don't hold) | `rework` (+ `rework_reason`) — loud |
 | Deliberately paused | `held` (+ `held_reason`) — loud |
 | Replaced by a corrective spec | `superseded` (+ `superseded_by`) |
 | Abandoned | `retired` |

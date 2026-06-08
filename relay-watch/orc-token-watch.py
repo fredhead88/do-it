@@ -24,7 +24,9 @@ import sys
 import time
 
 THRESHOLD = int(os.environ.get("ORC_WATCH_THRESHOLD", "400000"))
-ACTIVE = "/tmp/orc-active"
+ROLE = os.environ.get("ROLE", "orc")
+BOOT_CMD = os.environ.get("ROLE_BOOT_CMD", f"/{ROLE}")
+ACTIVE = f"/tmp/{ROLE}-active"
 REMIND_SECS = 600  # re-inject at most every 10 min if orc hasn't handed off yet
 TAIL_BYTES = 2_000_000
 
@@ -97,7 +99,7 @@ def main():
     if ctx < THRESHOLD:
         return
 
-    sentinel = f"/tmp/orc-handoff-due-{sid or 'unknown'}"
+    sentinel = f"/tmp/{ROLE}-handoff-due-{sid or 'unknown'}"
     if (
         os.path.exists(sentinel)
         and time.time() - os.path.getmtime(sentinel) < REMIND_SECS
@@ -111,12 +113,12 @@ def main():
         )
 
     msg = (
-        f"ORC CONTEXT WATCH: live context is {ctx:,} tokens "
-        f"(threshold {THRESHOLD:,}). This is an observable relay signal per the orc "
+        f"{ROLE.upper()} CONTEXT WATCH: live context is {ctx:,} tokens "
+        f"(threshold {THRESHOLD:,}). This is an observable relay signal per the {ROLE} "
         "skill. Finish ONLY the current atomic step, then write the relay baton "
-        "(docs/sessions/orc-relay.md, status: HANDED-OFF, tmp-then-rename) and STOP "
-        "— do not start new work. The relay watcher will /clear this pane and boot "
-        "a fresh /orc automatically; you do not need to tell the user to do it."
+        f"(docs/sessions/{ROLE}-relay.md, status: HANDED-OFF, tmp-then-rename) and STOP "
+        f"— do not start new work. The relay watcher will /clear this pane and boot a "
+        f"fresh {BOOT_CMD} automatically; you do not need to tell the user to do it."
     )
     print(
         json.dumps(

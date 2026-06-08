@@ -329,6 +329,7 @@ def _line(rec: dict) -> str:
 
 def render(records: list[dict], include_all: bool) -> str:
     verdicts = load_verdicts()
+    nh_store = load_needs_human()
     eff = {
         r.get("spec_id", r.get("_file", "?")): effective_status(
             r, verdicts.get(r.get("spec_id"))
@@ -373,6 +374,11 @@ def render(records: list[dict], include_all: bool) -> str:
         f"from {len(records)} spec record(s)._"
     )
     L.append("")
+    flags = load_liveness()
+    for flag in flags:
+        L.append(f"> 🚨 **{flag}**")
+    if flags:
+        L.append("")
 
     # --- prod-verified hollow: the loudest thing on the board ---
     if needs_rework:
@@ -388,6 +394,16 @@ def render(records: list[dict], include_all: bool) -> str:
         for r in needs_human:
             note = r.get("note") or r.get("needs_human_reason") or ""
             L.append(f"- {_line(r)}" + (f"  · {note}" if note else ""))
+        L.append("")
+
+    if nh_store:
+        L.append(f"## 🙋 NEEDS-HUMAN — escalations awaiting you ({len(nh_store)})")
+        for r in nh_store:
+            note = r.get("note") or ""
+            L.append(
+                f"- {r.get('spec_id', '?')} — **{r.get('reason', '?')}**"
+                + (f": {note}" if note else "")
+            )
         L.append("")
 
     # --- outstanding ---
@@ -695,6 +711,36 @@ def cmd_set(argv: list[str]) -> int:
 
 def _verified_path(spec_id: str) -> Path:
     return _get_verified_dir() / f"{spec_id}.yml"
+
+
+def load_needs_human() -> list[dict]:
+    """Unresolved escalations from the durable needs-human store
+    (LEDGER_DIR/needs-human/*.yml, written by rev/the verifier)."""
+    out: list[dict] = []
+    nhdir = LEDGER_DIR / "needs-human"
+    if not nhdir.exists():
+        return out
+    for path in sorted(nhdir.glob("*.yml")):
+        try:
+            rec = _load_yaml(path)
+        except Exception as e:
+            out.append({"spec_id": path.stem, "reason": "PARSE_ERROR", "note": str(e)})
+            continue
+        if not rec.get("resolved"):
+            out.append(rec)
+    return out
+
+
+def load_liveness() -> list[str]:
+    """Active dead-man's-switch flags written by relay-watch/liveness.sh."""
+    d = LEDGER_DIR / "liveness"
+    if not d.exists():
+        return []
+    out = []
+    for p in sorted(d.iterdir()):
+        if p.is_file():
+            out.append(f"{p.name}: {p.read_text().strip()}")
+    return out
 
 
 def load_verdicts() -> dict[str, dict]:

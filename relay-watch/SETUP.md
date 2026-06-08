@@ -103,3 +103,23 @@ That's it. The next `/orc` boot arms itself.
 - The `/clear`//`/orc` keystrokes go through Claude Code's slash-command
   menu; exact match ranks first. If a future skill name shadows `/orc`,
   add a trailing space to the send-keys strings.
+
+## Standing `rev` (the reviewer twin)
+
+`rev` self-relays with the SAME scripts, role-scoped via `ROLE=rev`:
+
+1. Register a second PostToolUse hook entry:
+   ```json
+   { "matcher": "", "hooks": [ { "type": "command",
+     "command": "ROLE=rev python3 /path/to/.../orc-token-watch.py", "timeout": 10 } ] }
+   ```
+2. Add a second cron line:
+   ```
+   * * * * * ROLE=rev /path/to/.../relay-watch.sh
+   ```
+3. Liveness (the dead-man's switch — run every 30 min):
+   ```
+   */30 * * * * /path/to/.../liveness.sh verifier; /path/to/.../liveness.sh pane orc; /path/to/.../liveness.sh pane rev; /path/to/.../liveness.sh hook orc /path/to/repo/.claude/settings.json; /path/to/.../liveness.sh hook rev /path/to/repo/.claude/settings.json
+   ```
+   A missing hook (the 2026-06-08 silent break) now raises `*_HOOK_MISSING` on the
+   board instead of failing silently.
