@@ -63,7 +63,7 @@ Two lanes (by audience) + the ledger. State **is** file location — no manifest
 | Claimed brief | `NNN-<slug>.brief.claimed.md` | think | think |
 | Spec | `NNN-<slug>-spec.md` | handover | orc |
 | Memo (advisory, never a work item) | `memo-<topic>.md` | think | orc |
-| Review card (mirrors the spec) | `<slug>.review.md` | orc | think |
+| Review card (mirrors the spec) | `<slug>.review.md` | orc | rev |
 | Triage account | shown in-session on multi-item dumps | think | human |
 | Ledger record (master) | `ledger/NNN-<slug>.yml` | handover→orc→think | all |
 | Relay baton | `docs/sessions/orc-relay.md` | orc | orc |
