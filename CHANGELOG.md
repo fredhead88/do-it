@@ -8,6 +8,33 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.6.0] — 2026-06-08
+
+**Review Loop v2 — Part 3 of 3 (complete): ops + the standing `rev` session.**
+
+### Added
+- **`rev`** — the standing reviewer skill (`skills/rev/SKILL.md`): drives the
+  verifier, writes per-criterion verdicts, files correctives, self-relays. orc's
+  twin — one builds, one reviews.
+- **Role-parameterized relay** (`ROLE` env on `orc-token-watch.py` + `relay-watch.sh`):
+  `rev` self-relays via its own sentinel/baton/boot (`/rev`), and can never reboot a
+  `rev` pane as `/orc`. Default `ROLE=orc` is byte-for-byte the prior behavior.
+- **`relay-watch/liveness.sh`** — the dead-man's switch: `VERIFIER_DOWN` (PROGRESS
+  stale), `ROLE_DOWN` (active pane dead), `*_HOOK_MISSING` (the relay hook isn't
+  registered — the exact silent break seen 2026-06-08). Flags surface loudly in the
+  ledger render.
+- Durable **needs-human store** projection in `render` (unresolved escalations reach
+  orc's board).
+
+### Changed
+- `think` sheds its review shape; the role map is now **orc / rev / think**. Review
+  of shipped work lives in `rev`; the executable verifier owns the per-criterion
+  verdict; closure is the derived `accepted`.
+
+### Deferred (unchanged from the design)
+- `deployed_sha` gate (10-min delay interim ships in v3.5.0), interaction_traces,
+  rework_count ceiling, severity. Revisit per the design's triggers.
+
 ## [3.5.0] — 2026-06-08
 
 **Review Loop v2 — Part 2 of 3: the executable verifier.** The verifier now
