@@ -1,13 +1,13 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { chromium } from 'playwright';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { runDomAssertion } from '../lib/assert-dom.mjs';
+import { launchBrowser } from '../lib/browser.mjs';
 
 const fixture = (f) => pathToFileURL(path.resolve('test/fixtures', f)).href;
 let browser;
-before(async () => { browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--no-sandbox'] }); });
+before(async () => { browser = await launchBrowser(); });
 after(async () => { await browser.close(); });
 
 async function check(file, assertion) {

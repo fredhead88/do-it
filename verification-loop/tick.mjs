@@ -35,6 +35,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { loadConfig, runDir, ROOT } from './lib/config.mjs';
+import { launchBrowser } from './lib/browser.mjs';
 import { criteriaFromCard, validateCriterion } from './lib/cardschema.mjs';
 import { runDomAssertion } from './lib/assert-dom.mjs';
 import { tooFreshToVerify } from './lib/freshness.mjs';
@@ -330,8 +331,7 @@ async function observeCriterion(criterion, cfg, statePath, dir, periodLabel) {
     const a = criterion.dom_assertion;
     const pagePath = cfg.page_map[a.page] || a.page;
     const url = cfg.prod_base + pagePath;
-    const { chromium } = await import('playwright');
-    const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    const browser = await launchBrowser();
     const ctx = await browser.newContext({ storageState: statePath });
     const page = await ctx.newPage();
     const consoleErrors = [];
