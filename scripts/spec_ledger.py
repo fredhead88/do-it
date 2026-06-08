@@ -329,6 +329,7 @@ def _line(rec: dict) -> str:
 
 def render(records: list[dict], include_all: bool) -> str:
     verdicts = load_verdicts()
+    nh_store = load_needs_human()
     eff = {
         r.get("spec_id", r.get("_file", "?")): effective_status(
             r, verdicts.get(r.get("spec_id"))
@@ -388,6 +389,16 @@ def render(records: list[dict], include_all: bool) -> str:
         for r in needs_human:
             note = r.get("note") or r.get("needs_human_reason") or ""
             L.append(f"- {_line(r)}" + (f"  · {note}" if note else ""))
+        L.append("")
+
+    if nh_store:
+        L.append(f"## 🙋 NEEDS-HUMAN — escalations awaiting you ({len(nh_store)})")
+        for r in nh_store:
+            note = r.get("note") or ""
+            L.append(
+                f"- {r.get('spec_id', '?')} — **{r.get('reason', '?')}**"
+                + (f": {note}" if note else "")
+            )
         L.append("")
 
     # --- outstanding ---
@@ -695,6 +706,20 @@ def cmd_set(argv: list[str]) -> int:
 
 def _verified_path(spec_id: str) -> Path:
     return _get_verified_dir() / f"{spec_id}.yml"
+
+
+def load_needs_human() -> list[dict]:
+    """Unresolved escalations from the durable needs-human store
+    (LEDGER_DIR/needs-human/*.yml, written by rev/the verifier)."""
+    out: list[dict] = []
+    nhdir = LEDGER_DIR / "needs-human"
+    if not nhdir.exists():
+        return out
+    for path in sorted(nhdir.glob("*.yml")):
+        rec = _load_yaml(path)
+        if not rec.get("resolved"):
+            out.append(rec)
+    return out
 
 
 def load_verdicts() -> dict[str, dict]:
