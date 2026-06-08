@@ -693,41 +693,64 @@ def _write_verdict(path: Path, rec: dict) -> None:
 def cmd_verify(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="spec_ledger.py verify")
     ap.add_argument("spec_id")
-    ap.add_argument("verdict")
-    ap.add_argument("--judge", required=True)  # codex | claude-fallback
     ap.add_argument(
-        "--evidence", required=True
-    )  # path/ref to the typed evidence artifact
+        "verdict", nargs="?"
+    )  # optional: derived from --criterion when given
+    ap.add_argument("--judge", required=True)  # codex | claude-fallback
+    ap.add_argument("--evidence", required=True)  # ref to the typed evidence artifact
     ap.add_argument(
         "--criterion",
         action="append",
         default=[],
         metavar="ID=VERDICT",
-        help="optional per-criterion verdicts",
+        help="per-criterion verdict; spec-level verdict is DERIVED from the full map",
     )
     a = ap.parse_args(argv)
-    if a.verdict not in VALID_VERDICT:
-        return _die(f"invalid verdict {a.verdict!r} (one of {sorted(VALID_VERDICT)})")
+
     now = _now_iso()
     path = _verified_path(a.spec_id)
     rec = _load_yaml(path) if path.exists() else {"spec_id": a.spec_id, "history": []}
-    rec["verdict"] = a.verdict
-    rec["judge"] = a.judge
-    rec["evidence_ref"] = a.evidence
-    rec["at"] = now
+
     if a.criterion:
         crit = rec.setdefault("criteria", {})
         for kv in a.criterion:
             if "=" not in kv:
                 return _die(f"--criterion must be ID=VERDICT, got {kv!r}")
             k, v = kv.split("=", 1)
+            if v not in VALID_CRITERION_VERDICT:
+                return _die(
+                    f"invalid criterion verdict {v!r} for {k!r} "
+                    f"(one of {sorted(VALID_CRITERION_VERDICT)})"
+                )
             crit[k] = v
+        spec_verdict = resolve_spec_verdict(crit)
+        # The verifier may pass a spec-level verdict only if it agrees with the
+        # derived one — we refuse a caller-supplied verdict that overrides the map.
+        if a.verdict is not None and a.verdict != spec_verdict:
+            return _die(
+                f"refusing caller-supplied spec verdict {a.verdict!r}: the criteria "
+                f"map derives {spec_verdict!r}"
+            )
+    else:
+        # Legacy path: explicit spec-level verdict, no per-criterion map.
+        if a.verdict is None:
+            return _die("verify needs either a verdict or one or more --criterion")
+        if a.verdict not in VALID_VERDICT:
+            return _die(
+                f"invalid verdict {a.verdict!r} (one of {sorted(VALID_VERDICT)})"
+            )
+        spec_verdict = a.verdict
+
+    rec["verdict"] = spec_verdict
+    rec["judge"] = a.judge
+    rec["evidence_ref"] = a.evidence
+    rec["at"] = now
     rec.setdefault("history", []).append(
-        {"at": now, "verdict": a.verdict, "judge": a.judge}
+        {"at": now, "verdict": spec_verdict, "judge": a.judge}
     )
     with _record_lock(path):  # advisory flock — same as register/set
         _write_verdict(path, rec)
-    print(f"{a.spec_id} verified -> {a.verdict}")
+    print(f"{a.spec_id} verified -> {spec_verdict}")
     return 0
 
 

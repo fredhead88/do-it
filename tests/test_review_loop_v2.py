@@ -3,6 +3,8 @@
 import importlib.util
 from pathlib import Path
 
+import yaml
+
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "spec_ledger.py"
 
@@ -60,3 +62,75 @@ def test_effective_status(monkeypatch, tmp_path):
     )
     # legacy records already stored as accepted still read as accepted
     assert sl.effective_status({"status": "accepted"}, None) == "accepted"
+
+
+def test_cmd_verify_derives_from_criteria(monkeypatch, tmp_path, capsys):
+    sl = _load(monkeypatch, tmp_path)
+    rc = sl.cmd_verify(
+        [
+            "100-x",
+            "--judge",
+            "codex",
+            "--evidence",
+            "e.json",
+            "--criterion",
+            "c1=CONFIRMED",
+            "--criterion",
+            "c2=REJECTED",
+        ]
+    )
+    capsys.readouterr()
+    assert rc == 0
+    rec = yaml.safe_load((sl._verified_path("100-x")).read_text())
+    assert rec["criteria"] == {"c1": "CONFIRMED", "c2": "REJECTED"}
+    assert rec["verdict"] == "REJECTED"  # derived, not supplied
+
+
+def test_cmd_verify_all_confirmed_is_confirmed(monkeypatch, tmp_path, capsys):
+    sl = _load(monkeypatch, tmp_path)
+    sl.cmd_verify(
+        ["100-x", "--judge", "codex", "--evidence", "e", "--criterion", "c1=CONFIRMED"]
+    )
+    sl.cmd_verify(
+        ["100-x", "--judge", "codex", "--evidence", "e", "--criterion", "c2=CONFIRMED"]
+    )
+    capsys.readouterr()
+    rec = yaml.safe_load((sl._verified_path("100-x")).read_text())
+    assert rec["criteria"] == {"c1": "CONFIRMED", "c2": "CONFIRMED"}
+    assert rec["verdict"] == "CONFIRMED"
+
+
+def test_cmd_verify_rejects_bad_criterion_verdict(monkeypatch, tmp_path, capsys):
+    sl = _load(monkeypatch, tmp_path)
+    rc = sl.cmd_verify(
+        ["100-x", "--judge", "c", "--evidence", "e", "--criterion", "c1=MAYBE"]
+    )
+    err = capsys.readouterr().err
+    assert rc == 1 and "MAYBE" in err
+
+
+def test_cmd_verify_refuses_disagreeing_positional(monkeypatch, tmp_path, capsys):
+    sl = _load(monkeypatch, tmp_path)
+    rc = sl.cmd_verify(
+        [
+            "100-x",
+            "CONFIRMED",
+            "--judge",
+            "c",
+            "--evidence",
+            "e",
+            "--criterion",
+            "c1=REJECTED",
+        ]
+    )
+    err = capsys.readouterr().err
+    assert rc == 1 and "refus" in err.lower()
+
+
+def test_cmd_verify_legacy_positional_still_works(monkeypatch, tmp_path, capsys):
+    sl = _load(monkeypatch, tmp_path)
+    rc = sl.cmd_verify(["100-x", "CONFIRMED", "--judge", "c", "--evidence", "e"])
+    capsys.readouterr()
+    assert rc == 0
+    rec = yaml.safe_load((sl._verified_path("100-x")).read_text())
+    assert rec["verdict"] == "CONFIRMED"
