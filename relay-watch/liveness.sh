@@ -25,9 +25,13 @@ case "${1:-}" in
     role="${2:?role}"; active="/tmp/${role}-active"
     [ -f "$active" ] || { drop "${role^^}_DOWN"; exit 0; }  # not armed -> not "down"
     pane="$(grep -oP '(?<=PANE=).*' "$active" 2>/dev/null)"
-    if [ -n "$pane" ] && ! tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pane"; then
+    if [ -z "$pane" ]; then
+      raise "${role^^}_DOWN" "$active exists but has no PANE= line (corrupt?)"
+    elif ! tmux list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qx "$pane"; then
       raise "${role^^}_DOWN" "$active points at dead pane $pane"
-    else drop "${role^^}_DOWN"; fi
+    else
+      drop "${role^^}_DOWN"
+    fi
     ;;
   hook)
     role="${2:?role}"; settings="${3:?settings.json}"

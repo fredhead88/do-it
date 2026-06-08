@@ -29,7 +29,7 @@ flock -n 9 || exit 0
 ts() { date -u +%FT%TZ; }
 
 for sentinel in /tmp/${ROLE}-handoff-due-*; do
-  [ -e "$sentinel" ] || exit 0
+  [ -e "$sentinel" ] || continue
 
   PANE="" SESSION_ID="" TRANSCRIPT="" CWD="" CONTEXT=""
   # shellcheck disable=SC1090

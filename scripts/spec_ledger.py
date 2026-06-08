@@ -374,9 +374,10 @@ def render(records: list[dict], include_all: bool) -> str:
         f"from {len(records)} spec record(s)._"
     )
     L.append("")
-    for flag in load_liveness():
+    flags = load_liveness()
+    for flag in flags:
         L.append(f"> 🚨 **{flag}**")
-    if load_liveness():
+    if flags:
         L.append("")
 
     # --- prod-verified hollow: the loudest thing on the board ---
@@ -720,7 +721,11 @@ def load_needs_human() -> list[dict]:
     if not nhdir.exists():
         return out
     for path in sorted(nhdir.glob("*.yml")):
-        rec = _load_yaml(path)
+        try:
+            rec = _load_yaml(path)
+        except Exception as e:
+            out.append({"spec_id": path.stem, "reason": "PARSE_ERROR", "note": str(e)})
+            continue
         if not rec.get("resolved"):
             out.append(rec)
     return out

@@ -22,27 +22,34 @@ def _run(role, pane, sid, transcript):
 
 
 def test_rev_role_writes_rev_sentinel_and_boot(tmp_path):
-    # active file for ROLE=rev must name this pane
-    Path("/tmp/rev-active").write_text("PANE=%7\n")
+    active = Path("/tmp/rev-active")
+    sentinel = Path("/tmp/rev-handoff-due-sid1")
+    active.write_text("PANE=%7\n")
     # a transcript with a usage block over threshold
     t = tmp_path / "sid1.jsonl"
     t.write_text(json.dumps({"message": {"usage": {"input_tokens": 999999}}}) + "\n")
-    r = _run("rev", "%7", "sid1", str(t))
-    assert r.returncode == 0
-    sentinel = Path("/tmp/rev-handoff-due-sid1")
-    assert sentinel.exists()
-    # the injected message must reference the rev baton + /rev, not orc
-    out = r.stdout
-    assert "rev-relay.md" in out and "/rev" in out
-    sentinel.unlink()
-    Path("/tmp/rev-active").unlink()
+    try:
+        r = _run("rev", "%7", "sid1", str(t))
+        assert r.returncode == 0
+        assert sentinel.exists()
+        # the injected message must reference the rev baton + /rev, not orc
+        out = r.stdout
+        assert "rev-relay.md" in out and "/rev" in out
+    finally:
+        sentinel.unlink(missing_ok=True)
+        active.unlink(missing_ok=True)
 
 
 def test_wrong_pane_is_noop(tmp_path):
-    Path("/tmp/rev-active").write_text("PANE=%7\n")
+    active = Path("/tmp/rev-active")
+    sentinel = Path("/tmp/rev-handoff-due-sid2")
+    active.write_text("PANE=%7\n")
     t = tmp_path / "sid2.jsonl"
     t.write_text(json.dumps({"message": {"usage": {"input_tokens": 999999}}}) + "\n")
-    r = _run("rev", "%DIFFERENT", "sid2", str(t))
-    assert r.returncode == 0 and r.stdout.strip() == ""
-    assert not Path("/tmp/rev-handoff-due-sid2").exists()
-    Path("/tmp/rev-active").unlink()
+    try:
+        r = _run("rev", "%DIFFERENT", "sid2", str(t))
+        assert r.returncode == 0 and r.stdout.strip() == ""
+        assert not sentinel.exists()
+    finally:
+        sentinel.unlink(missing_ok=True)
+        active.unlink(missing_ok=True)

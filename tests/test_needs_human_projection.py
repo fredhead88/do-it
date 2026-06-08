@@ -36,3 +36,17 @@ def test_render_surfaces_liveness_flags(monkeypatch, tmp_path):
     (fl / "VERIFIER_DOWN").write_text("2026-06-08T00:00:00Z PROGRESS.jsonl stale 200m")
     body = sl.render(sl.load_records(), include_all=False)
     assert "VERIFIER_DOWN" in body and "🚨" in body
+
+
+def test_render_does_not_crash_on_malformed_needs_human_yaml(monkeypatch, tmp_path):
+    sl = _load(monkeypatch, tmp_path)
+    nh = sl.LEDGER_DIR / "needs-human"
+    nh.mkdir(parents=True, exist_ok=True)
+    # malformed YAML — should not crash render
+    (nh / "bad.yml").write_text(": : :")
+    # also include a valid entry so we confirm it still renders
+    (nh / "200-x.yml").write_text(
+        "spec_id: 200-x\nreason: TASTE\nnote: fine\nresolved: false\n"
+    )
+    body = sl.render(sl.load_records(), include_all=False)
+    assert "PARSE_ERROR" in body
