@@ -89,6 +89,31 @@ def _get_verified_dir() -> Path:
 
 VALID_VERDICT = {"CONFIRMED", "REJECTED"}
 
+# Per-criterion verdicts (richer than the spec-level CONFIRMED/REJECTED). The
+# verification loop's HOLLOW/MISSING/REGRESSION all map to REJECTED before they
+# reach here; `not-applicable` marks a criterion that is legitimately unobservable
+# (no test-tenant data) so one data-gap can't freeze a spec forever; `not-run`
+# means not-yet-observed (incomplete).
+VALID_CRITERION_VERDICT = {"CONFIRMED", "REJECTED", "not-applicable", "not-run"}
+
+
+def resolve_spec_verdict(criteria: dict) -> str | None:
+    """Aggregate a per-criterion verdict map into a spec-level verdict.
+
+    REJECTED if any criterion is REJECTED; CONFIRMED iff there is >=1 observable
+    criterion and every observable (non-`not-applicable`) one is CONFIRMED;
+    otherwise None (incomplete -> renders as `awaiting-prod`).
+    """
+    if not criteria:
+        return None
+    vals = list(criteria.values())
+    if any(v == "REJECTED" for v in vals):
+        return "REJECTED"
+    observable = [v for v in vals if v != "not-applicable"]
+    if observable and all(v == "CONFIRMED" for v in observable):
+        return "CONFIRMED"
+    return None
+
 
 @contextmanager
 def _record_lock(path: Path):
