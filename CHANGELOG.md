@@ -8,6 +8,27 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.5.0] — 2026-06-08
+
+**Review Loop v2 — Part 2 of 3: the executable verifier.** The verifier now
+produces verdicts from an executable rendered-page observation, feeding the v3.4.0
+derived join.
+
+### Added
+- `lib/predicate.mjs`, `lib/assert-dom.mjs`, `lib/cardschema.mjs`, `lib/freshness.mjs`
+  (+ `node --test` fixtures). The `dom_assertion` runner catches the A1 class —
+  a blank-but-present container (`min_rows`/`count_gte`/`text_matches`, never
+  `present`) and a render-throw via `forbid_console`.
+- Machine-readable `verifier:criteria` block in the review card; the verifier parses
+  it and **fails closed** on a ui criterion with no/invalid `dom_assertion`.
+
+### Changed
+- The verifier writes **per-criterion** `CONFIRMED`/`REJECTED`/`not-applicable` via
+  `spec_ledger.py verify --criterion`; failures now reach `verified/` (not just
+  `NEEDS-HUMAN.jsonl`), so `needs-rework` is reachable.
+- A spec is skipped until 10 min after it shipped (interim for the deferred
+  `deployed_sha` gate). Part 3 (ops crons + the standing `rev` session) follows.
+
 ## [3.4.0] — 2026-06-08
 
 **Review Loop v2 — Part 1 of 3: the derived-verdict ledger substrate.** First

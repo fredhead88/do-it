@@ -34,7 +34,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
+import yaml from 'js-yaml';
+
 import { loadConfig, runDir, ROOT } from './lib/config.mjs';
+import { launchBrowser } from './lib/browser.mjs';
+import { criteriaFromCard, validateCriterion } from './lib/cardschema.mjs';
+import { runDomAssertion } from './lib/assert-dom.mjs';
+import { tooFreshToVerify, shippedAtFromRecord } from './lib/freshness.mjs';
 import { selfcheck } from './lib/selfcheck.mjs';
 import { acquire } from './lib/auth.mjs';
 import { probe } from './lib/probe.mjs';
@@ -147,15 +153,26 @@ function loadShippedSpecs(filterIds = []) {
       const idM     = text.match(/^spec_id:\s*(.+)$/m);
       const fileM   = text.match(/^spec_file:\s*(.+)$/m);
       const shaM    = text.match(/^shipped_sha:\s*(.+)$/m);
+      const cardM   = text.match(/^review_card:\s*(.+)$/m);
       if (!statusM || !idM) continue;
       const status  = statusM[1].trim();
       if (!['shipped', 'accepted'].includes(status)) continue;
       const spec_id   = idM[1].trim();
       if (filterIds.length && !filterIds.includes(spec_id)) continue;
+      let shipped_at = null;
+      try {
+        const doc = yaml.load(text);
+        const hist = (doc && Array.isArray(doc.history)) ? doc.history : [];
+        for (let i = hist.length - 1; i >= 0; i--) {
+          if (hist[i] && hist[i].status === 'shipped') { shipped_at = hist[i].at || null; break; }
+        }
+      } catch { /* leave null — do not block verification */ }
       records.push({
         spec_id,
         spec_file: fileM ? fileM[1].trim() : null,
         shipped_sha: shaM ? shaM[1].trim() : null,
+        review_card: cardM ? cardM[1].trim() : null,
+        shipped_at,
         status,
       });
     } catch { /* skip */ }
@@ -167,7 +184,24 @@ function loadShippedSpecs(filterIds = []) {
  *  Looks for lines starting with "- Acceptance" or "## R" blocks.
  *  Returns array of { id, text, type }.
  */
-function loadCriteria(specFile, specId) {
+function loadCriteria(specFile, specId, reviewCard) {
+  // Prefer the machine-readable criteria block in the review card (authored by orc).
+  if (reviewCard) {
+    const cardPath = path.isAbsolute(reviewCard)
+      ? reviewCard
+      : path.join(process.env.HOME, '.claude', 'brief-inbox', reviewCard);
+    if (fs.existsSync(cardPath)) {
+      try {
+        const { criteria, errors } = criteriaFromCard(fs.readFileSync(cardPath, 'utf8'));
+        if (criteria) {
+          if (errors.length) log(`  card schema errors for ${specId}: ${errors.join('; ')}`);
+          return criteria.map((c) => ({ ...c, schema_error: validateCriterion(c) || null }));
+        }
+      } catch (e) {
+        log(`  card YAML parse error for ${specId}: ${e.message} — falling back to prose`);
+      }
+    }
+  }
   // specFile may be relative to repo root
   let filePath = specFile;
   if (specFile && !path.isAbsolute(specFile) && REPO_ROOT_CFG) {
@@ -271,32 +305,24 @@ function alreadyConfirmed(dir, specId, criterionId) {
 }
 
 /** Call spec_ledger.py verify subcommand. No-op in dry-run mode. */
-async function callSpecLedgerVerify(specId, verdict, judge, evidenceRef) {
+async function callSpecLedgerVerify(specId, criterionId, verdict, judge, evidenceRef) {
   if (DRY_RUN) {
-    log(`[DRY-RUN] spec_ledger.py verify ${specId} ${verdict} --judge ${judge} --evidence ${evidenceRef}`);
+    log(`[DRY-RUN] spec_ledger.py verify ${specId} --criterion ${criterionId}=${verdict} --judge ${judge}`);
     return;
   }
-
-  if (!fs.existsSync(LEDGER_PY)) {
-    log(`WARNING: spec_ledger.py not found at ${LEDGER_PY} — skipping verify call`);
-    return;
-  }
-
+  if (!fs.existsSync(LEDGER_PY)) { log(`WARNING: spec_ledger.py not found at ${LEDGER_PY}`); return; }
   return new Promise((resolve) => {
     const child = spawn(PYTHON_BIN, [
-      LEDGER_PY, 'verify', specId, verdict,
-      '--judge', judge,
-      '--evidence', evidenceRef,
+      LEDGER_PY, 'verify', specId,
+      '--judge', judge, '--evidence', evidenceRef,
+      '--criterion', `${criterionId}=${verdict}`,
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
     child.stdout.on('data', d => { out += d; });
     child.stderr.on('data', d => { err += d; });
     child.on('close', (code) => {
-      if (code !== 0) {
-        log(`WARNING: spec_ledger.py verify exited ${code}: ${err.slice(0, 200)}`);
-      } else {
-        log(`spec_ledger verify: ${out.trim()}`);
-      }
+      if (code !== 0) log(`WARNING: spec_ledger.py verify exited ${code}: ${err.slice(0, 200)}`);
+      else log(`spec_ledger verify: ${out.trim()}`);
       resolve();
     });
   });
@@ -304,6 +330,42 @@ async function callSpecLedgerVerify(specId, verdict, judge, evidenceRef) {
 
 /** Observe a single criterion and return { verdict, evidenceRef, judgeResult }. */
 async function observeCriterion(criterion, cfg, statePath, dir, periodLabel) {
+  // Fail-closed: a ui criterion whose card schema was invalid is REJECTED outright.
+  if (criterion.schema_error) {
+    return { layer: 'DOM_ASSERT', evidenceRef: null,
+      judgeResult: { token: 'NOT_SATISFIED', reason: criterion.schema_error, judge: 'schema', unclear: false } };
+  }
+
+  // Executable assertion BEFORE any LLM for ui criteria with a dom_assertion.
+  if (criterion.criterion_type === 'ui' && criterion.dom_assertion) {
+    const a = criterion.dom_assertion;
+    const pagePath = cfg.page_map[a.page] || a.page;
+    const url = cfg.prod_base + pagePath;
+    const browser = await launchBrowser();
+    let res;
+    try {
+      const ctx = await browser.newContext({ storageState: statePath });
+      const page = await ctx.newPage();
+      const consoleErrors = [];
+      page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.locator('main, [role="main"], #__next').first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+      res = await runDomAssertion(page, a, consoleErrors);
+    } catch (e) {
+      res = { pass: false, reason: `assertion error: ${e.message}`, observed: {} };
+    } finally {
+      await browser.close();
+    }
+    const evidenceFile = path.join(dir, 'evidence', `${criterion.id}-${periodLabel}.json`);
+    fs.mkdirSync(path.join(dir, 'evidence'), { recursive: true });
+    fs.writeFileSync(evidenceFile, JSON.stringify({ criterion: criterion.text, layer: 'DOM_ASSERT', url, assertion: a, result: res, at: new Date().toISOString() }, null, 2));
+    return {
+      layer: 'DOM_ASSERT',
+      evidenceRef: evidenceFile,
+      judgeResult: { token: res.pass ? 'SATISFIED' : 'NOT_SATISFIED', reason: res.reason, judge: 'dom-assert', unclear: false },
+    };
+  }
+
   const layer = selectObservationLayer(criterion.text);
   const evidenceName = `${criterion.id}-${periodLabel}`;
 
@@ -522,7 +584,12 @@ async function tick() {
 
   // ── Per-spec, per-criterion loop ──────────────────────────────────────────────
   for (const spec of specs) {
-    const criteria = loadCriteria(spec.spec_file, spec.spec_id);
+    if (tooFreshToVerify(spec.shipped_at, 10)) {
+      log(`  skip ${spec.spec_id} — shipped <10min ago, letting the deploy go live`);
+      continue;
+    }
+
+    const criteria = loadCriteria(spec.spec_file, spec.spec_id, spec.review_card);
 
     const pinnedSha = spec.shipped_sha || currentSha;
     pinSpecSha(dir, spec.spec_id, pinnedSha, criteria.map(c => c.id));
@@ -699,11 +766,12 @@ async function tick() {
 
       // ── Step 6: resolve ──────────────────────────────────────────────────────
       if (verdict === 'CONFIRMED') {
-        log(`  CONFIRMED — calling spec_ledger verify`);
-        await callSpecLedgerVerify(spec.spec_id, 'CONFIRMED', finalJudgeResult.judge, evidenceRef || 'none');
+        log(`  CONFIRMED`);
+        await callSpecLedgerVerify(spec.spec_id, criterion.id, 'CONFIRMED', finalJudgeResult.judge, evidenceRef || 'none');
 
-      } else if (['HOLLOW', 'MISSING', 'REGRESSION'].includes(verdict)) {
-        log(`  ${verdict} — filing corrective (attempt ${attempts + 1}/${TRIAL_BUDGET})`);
+      } else if (verdict === 'HOLLOW' || verdict === 'MISSING' || verdict === 'REGRESSION') {
+        log(`  ${verdict} — writing REJECTED + filing corrective (attempt ${attempts + 1}/${TRIAL_BUDGET})`);
+        await callSpecLedgerVerify(spec.spec_id, criterion.id, 'REJECTED', finalJudgeResult.judge, evidenceRef || 'none');
         escalate(dir, {
           event: 'CORRECTIVE_NEEDED',
           spec: spec.spec_id,
@@ -717,7 +785,18 @@ async function tick() {
           note: `File a corrective spec with observable criteria targeting: ${criterion.text}`,
         });
 
-      } else if (verdict === 'DATA-GAP' || verdict === 'NOT-RUN') {
+      } else if (verdict === 'DATA-GAP') {
+        await callSpecLedgerVerify(spec.spec_id, criterion.id, 'not-applicable', finalJudgeResult.judge, evidenceRef || 'none');
+        escalate(dir, {
+          event: 'OPS_NOTE',
+          spec: spec.spec_id,
+          criterionId: criterion.id,
+          criterion: criterion.text,
+          verdict,
+          deployed_sha: currentSha,
+        });
+
+      } else if (verdict === 'NOT-RUN') {
         escalate(dir, {
           event: 'OPS_NOTE',
           spec: spec.spec_id,
@@ -728,6 +807,7 @@ async function tick() {
         });
 
       } else if (verdict === 'SUSPECTED-GAMING') {
+        // intentional: no spec_ledger verdict — a human must adjudicate a gaming claim
         escalate(dir, {
           event: 'SUSPECTED_GAMING',
           spec: spec.spec_id,
@@ -745,6 +825,9 @@ async function tick() {
           criterion: criterion.text,
           deployed_sha: currentSha,
         });
+      } else {
+        log(`  unhandled verdict ${verdict} for ${spec.spec_id}:${criterion.id} — escalating`);
+        escalate(dir, { event: 'UNHANDLED_VERDICT', spec: spec.spec_id, criterionId: criterion.id, verdict });
       }
     }  // end criterion loop
 
