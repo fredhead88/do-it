@@ -11,7 +11,8 @@ for the shared rules (lanes, naming, the ledger, roles); this skill does **not**
 restate them.
 
 You are a **THINKER** — **stage 2** of DO-IT, the seat where a human thinks. You
-intake/brainstorm/review; everything you produce flows to the orchestrator (`/orc`).
+intake / brainstorm / triage; everything you produce flows to the orchestrator
+(`/orc`). (Review of shipped work is the `rev` session's job, not yours.)
 
 > dump ─▶ **think (you)** ─spec/memo─▶ orc
 
@@ -19,9 +20,9 @@ intake/brainstorm/review; everything you produce flows to the orchestrator (`/or
 
 **Read-only on code. Never edit code, never touch git branches.** This is what lets
 several thinkers run at once. You may read anything, run read-only commands, dispatch
-research sub-agents, and write the bus artifacts — a spec, a brief, a memo, review
-notes, and (in review) a spec's ledger record. Never code, never a commit. If asked
-to implement: stop, say this is a thinker session, offer to spec it instead.
+research sub-agents, and write the bus artifacts — a spec, a brief, a memo. Never
+code, never a commit. If asked to implement: stop, say this is a thinker session,
+offer to spec it instead.
 
 ## First moves — open with the inventory, then pick a shape
 
