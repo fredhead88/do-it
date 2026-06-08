@@ -291,32 +291,24 @@ function alreadyConfirmed(dir, specId, criterionId) {
 }
 
 /** Call spec_ledger.py verify subcommand. No-op in dry-run mode. */
-async function callSpecLedgerVerify(specId, verdict, judge, evidenceRef) {
+async function callSpecLedgerVerify(specId, criterionId, verdict, judge, evidenceRef) {
   if (DRY_RUN) {
-    log(`[DRY-RUN] spec_ledger.py verify ${specId} ${verdict} --judge ${judge} --evidence ${evidenceRef}`);
+    log(`[DRY-RUN] spec_ledger.py verify ${specId} --criterion ${criterionId}=${verdict} --judge ${judge}`);
     return;
   }
-
-  if (!fs.existsSync(LEDGER_PY)) {
-    log(`WARNING: spec_ledger.py not found at ${LEDGER_PY} — skipping verify call`);
-    return;
-  }
-
+  if (!fs.existsSync(LEDGER_PY)) { log(`WARNING: spec_ledger.py not found at ${LEDGER_PY}`); return; }
   return new Promise((resolve) => {
     const child = spawn(PYTHON_BIN, [
-      LEDGER_PY, 'verify', specId, verdict,
-      '--judge', judge,
-      '--evidence', evidenceRef,
+      LEDGER_PY, 'verify', specId,
+      '--judge', judge, '--evidence', evidenceRef,
+      '--criterion', `${criterionId}=${verdict}`,
     ], { stdio: ['ignore', 'pipe', 'pipe'] });
     let out = '', err = '';
     child.stdout.on('data', d => { out += d; });
     child.stderr.on('data', d => { err += d; });
     child.on('close', (code) => {
-      if (code !== 0) {
-        log(`WARNING: spec_ledger.py verify exited ${code}: ${err.slice(0, 200)}`);
-      } else {
-        log(`spec_ledger verify: ${out.trim()}`);
-      }
+      if (code !== 0) log(`WARNING: spec_ledger.py verify exited ${code}: ${err.slice(0, 200)}`);
+      else log(`spec_ledger verify: ${out.trim()}`);
       resolve();
     });
   });
@@ -756,11 +748,12 @@ async function tick() {
 
       // ── Step 6: resolve ──────────────────────────────────────────────────────
       if (verdict === 'CONFIRMED') {
-        log(`  CONFIRMED — calling spec_ledger verify`);
-        await callSpecLedgerVerify(spec.spec_id, 'CONFIRMED', finalJudgeResult.judge, evidenceRef || 'none');
+        log(`  CONFIRMED`);
+        await callSpecLedgerVerify(spec.spec_id, criterion.id, 'CONFIRMED', finalJudgeResult.judge, evidenceRef || 'none');
 
-      } else if (['HOLLOW', 'MISSING', 'REGRESSION'].includes(verdict)) {
-        log(`  ${verdict} — filing corrective (attempt ${attempts + 1}/${TRIAL_BUDGET})`);
+      } else if (verdict === 'HOLLOW' || verdict === 'MISSING' || verdict === 'REGRESSION') {
+        log(`  ${verdict} — writing REJECTED + filing corrective (attempt ${attempts + 1}/${TRIAL_BUDGET})`);
+        await callSpecLedgerVerify(spec.spec_id, criterion.id, 'REJECTED', finalJudgeResult.judge, evidenceRef || 'none');
         escalate(dir, {
           event: 'CORRECTIVE_NEEDED',
           spec: spec.spec_id,
@@ -774,7 +767,18 @@ async function tick() {
           note: `File a corrective spec with observable criteria targeting: ${criterion.text}`,
         });
 
-      } else if (verdict === 'DATA-GAP' || verdict === 'NOT-RUN') {
+      } else if (verdict === 'DATA-GAP') {
+        await callSpecLedgerVerify(spec.spec_id, criterion.id, 'not-applicable', finalJudgeResult.judge, evidenceRef || 'none');
+        escalate(dir, {
+          event: 'OPS_NOTE',
+          spec: spec.spec_id,
+          criterionId: criterion.id,
+          criterion: criterion.text,
+          verdict,
+          deployed_sha: currentSha,
+        });
+
+      } else if (verdict === 'NOT-RUN') {
         escalate(dir, {
           event: 'OPS_NOTE',
           spec: spec.spec_id,
