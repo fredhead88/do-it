@@ -8,9 +8,15 @@ export function parsePredicate(str) {
   const i = s.indexOf(':');
   const kind = i === -1 ? s : s.slice(0, i);
   const arg = i === -1 ? '' : s.slice(i + 1);
-  if (kind === 'min_rows') return { kind, n: parseInt(arg, 10) };
-  if (kind === 'count_gte') return { kind, n: parseInt(arg, 10) };
-  if (kind === 'text_matches') return { kind, re: arg };
+  if (kind === 'min_rows' || kind === 'count_gte') {
+    const n = parseInt(arg, 10);
+    if (Number.isNaN(n)) throw new Error(`${kind} requires a number, got ${JSON.stringify(arg)}`);
+    return { kind, n };
+  }
+  if (kind === 'text_matches') {
+    try { new RegExp(arg); } catch (e) { throw new Error(`invalid regex in text_matches: ${e.message}`); }
+    return { kind, re: arg };
+  }
   throw new Error(`unknown predicate: ${str}`);
 }
 

@@ -17,6 +17,15 @@ test('parsePredicate rejects present (the A1 trap)', () => {
 test('parsePredicate rejects unknown', () => {
   assert.throws(() => parsePredicate('whatever:1'), /unknown predicate/i);
 });
+test('parsePredicate min_rows rejects non-numeric arg', () => {
+  assert.throws(() => parsePredicate('min_rows:'), /requires a number/);
+});
+test('parsePredicate count_gte rejects non-numeric arg', () => {
+  assert.throws(() => parsePredicate('count_gte:abc'), /requires a number/);
+});
+test('parsePredicate text_matches rejects invalid regex', () => {
+  assert.throws(() => parsePredicate('text_matches:['), /invalid regex/);
+});
 
 test('evalPredicate min_rows passes/fails on count', () => {
   assert.equal(evalPredicate({ kind: 'min_rows', n: 1 }, { count: 1 }).pass, true);

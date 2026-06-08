@@ -34,11 +34,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 
+import yaml from 'js-yaml';
+
 import { loadConfig, runDir, ROOT } from './lib/config.mjs';
 import { launchBrowser } from './lib/browser.mjs';
 import { criteriaFromCard, validateCriterion } from './lib/cardschema.mjs';
 import { runDomAssertion } from './lib/assert-dom.mjs';
-import { tooFreshToVerify } from './lib/freshness.mjs';
+import { tooFreshToVerify, shippedAtFromRecord } from './lib/freshness.mjs';
 import { selfcheck } from './lib/selfcheck.mjs';
 import { acquire } from './lib/auth.mjs';
 import { probe } from './lib/probe.mjs';
@@ -152,18 +154,25 @@ function loadShippedSpecs(filterIds = []) {
       const fileM   = text.match(/^spec_file:\s*(.+)$/m);
       const shaM    = text.match(/^shipped_sha:\s*(.+)$/m);
       const cardM   = text.match(/^review_card:\s*(.+)$/m);
-      const shipAtM = text.match(/^\s*-\s*at:\s*'?([^'\n]+)'?\n\s*status:\s*shipped/m);
       if (!statusM || !idM) continue;
       const status  = statusM[1].trim();
       if (!['shipped', 'accepted'].includes(status)) continue;
       const spec_id   = idM[1].trim();
       if (filterIds.length && !filterIds.includes(spec_id)) continue;
+      let shipped_at = null;
+      try {
+        const doc = yaml.load(text);
+        const hist = (doc && Array.isArray(doc.history)) ? doc.history : [];
+        for (let i = hist.length - 1; i >= 0; i--) {
+          if (hist[i] && hist[i].status === 'shipped') { shipped_at = hist[i].at || null; break; }
+        }
+      } catch { /* leave null — do not block verification */ }
       records.push({
         spec_id,
         spec_file: fileM ? fileM[1].trim() : null,
         shipped_sha: shaM ? shaM[1].trim() : null,
         review_card: cardM ? cardM[1].trim() : null,
-        shipped_at: shipAtM ? shipAtM[1].trim() : null,
+        shipped_at,
         status,
       });
     } catch { /* skip */ }
@@ -182,13 +191,14 @@ function loadCriteria(specFile, specId, reviewCard) {
       ? reviewCard
       : path.join(process.env.HOME, '.claude', 'brief-inbox', reviewCard);
     if (fs.existsSync(cardPath)) {
-      const { criteria, errors } = criteriaFromCard(fs.readFileSync(cardPath, 'utf8'));
-      if (criteria) {
-        if (errors.length) {
-          log(`  card schema errors for ${specId}: ${errors.join('; ')}`);
+      try {
+        const { criteria, errors } = criteriaFromCard(fs.readFileSync(cardPath, 'utf8'));
+        if (criteria) {
+          if (errors.length) log(`  card schema errors for ${specId}: ${errors.join('; ')}`);
+          return criteria.map((c) => ({ ...c, schema_error: validateCriterion(c) || null }));
         }
-        // Mark invalid criteria so the loop fails them closed rather than confirming.
-        return criteria.map((c) => ({ ...c, schema_error: validateCriterion(c) || null }));
+      } catch (e) {
+        log(`  card YAML parse error for ${specId}: ${e.message} — falling back to prose`);
       }
     }
   }
@@ -332,12 +342,12 @@ async function observeCriterion(criterion, cfg, statePath, dir, periodLabel) {
     const pagePath = cfg.page_map[a.page] || a.page;
     const url = cfg.prod_base + pagePath;
     const browser = await launchBrowser();
-    const ctx = await browser.newContext({ storageState: statePath });
-    const page = await ctx.newPage();
-    const consoleErrors = [];
-    page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
     let res;
     try {
+      const ctx = await browser.newContext({ storageState: statePath });
+      const page = await ctx.newPage();
+      const consoleErrors = [];
+      page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
       await page.locator('main, [role="main"], #__next').first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
       res = await runDomAssertion(page, a, consoleErrors);
@@ -797,6 +807,7 @@ async function tick() {
         });
 
       } else if (verdict === 'SUSPECTED-GAMING') {
+        // intentional: no spec_ledger verdict — a human must adjudicate a gaming claim
         escalate(dir, {
           event: 'SUSPECTED_GAMING',
           spec: spec.spec_id,
@@ -814,6 +825,9 @@ async function tick() {
           criterion: criterion.text,
           deployed_sha: currentSha,
         });
+      } else {
+        log(`  unhandled verdict ${verdict} for ${spec.spec_id}:${criterion.id} — escalating`);
+        escalate(dir, { event: 'UNHANDLED_VERDICT', spec: spec.spec_id, criterionId: criterion.id, verdict });
       }
     }  // end criterion loop
 
