@@ -89,6 +89,31 @@ def _get_verified_dir() -> Path:
 
 VALID_VERDICT = {"CONFIRMED", "REJECTED"}
 
+# Per-criterion verdicts (richer than the spec-level CONFIRMED/REJECTED). The
+# verification loop's HOLLOW/MISSING/REGRESSION all map to REJECTED before they
+# reach here; `not-applicable` marks a criterion that is legitimately unobservable
+# (no test-tenant data) so one data-gap can't freeze a spec forever; `not-run`
+# means not-yet-observed (incomplete).
+VALID_CRITERION_VERDICT = {"CONFIRMED", "REJECTED", "not-applicable", "not-run"}
+
+
+def resolve_spec_verdict(criteria: dict) -> str | None:
+    """Aggregate a per-criterion verdict map into a spec-level verdict.
+
+    REJECTED if any criterion is REJECTED; CONFIRMED iff there is >=1 observable
+    criterion and every observable (non-`not-applicable`) one is CONFIRMED;
+    otherwise None (incomplete -> renders as `awaiting-prod`).
+    """
+    if not criteria:
+        return None
+    vals = list(criteria.values())
+    if any(v == "REJECTED" for v in vals):
+        return "REJECTED"
+    observable = [v for v in vals if v != "not-applicable"]
+    if observable and all(v == "CONFIRMED" for v in observable):
+        return "CONFIRMED"
+    return None
+
 
 @contextmanager
 def _record_lock(path: Path):
@@ -157,7 +182,7 @@ VALID_STATUS = {
     "building",
     "merged",
     "shipped",
-    "accepted",
+    "accepted",  # legacy only — blocked by cmd_set; effective_status derives it from shipped ∧ CONFIRMED
     "held",
     "bounced",
     "rework",
@@ -178,6 +203,7 @@ OUTSTANDING_STATUSES = {
     "unknown",
 }
 STALE_MERGED_HOURS = 24
+AWAITING_PROD_FLOOR_HOURS = 48
 
 
 # --------------------------------------------------------------------------- IO
@@ -233,10 +259,42 @@ def _merged_at(rec: dict) -> datetime | None:
     return None
 
 
+def _shipped_at(rec: dict) -> datetime | None:
+    """When did this record reach `shipped`? From history, else None."""
+    for entry in reversed(rec.get("history") or []):
+        if isinstance(entry, dict) and entry.get("status") == "shipped":
+            return _parse_ts(entry.get("at"))
+    return None
+
+
 def _hours_since(dt: datetime | None) -> float | None:
     if dt is None:
         return None
     return (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
+
+
+def effective_status(rec: dict, verdict: dict | None) -> str:
+    """The closure status, COMPUTED from the build record + the verifier verdict.
+
+    `accepted` is never stored — it is derived here from `shipped ∧ CONFIRMED`,
+    so the build ledger and the verifier verdict can never disagree. Pre-shipped
+    records (and legacy records already stored as `accepted`) return their own
+    stored status unchanged.
+
+    Precedence for shipped records: REJECTED → needs_human → CONFIRMED → awaiting-prod.
+    An open needs_human beats CONFIRMED but not REJECTED (a definitive rejection wins).
+    """
+    status = rec.get("status")
+    if status != "shipped":
+        return status  # pre-shipped lifecycle, and legacy stored `accepted`
+    v = (verdict or {}).get("verdict")
+    if v == "REJECTED":
+        return "needs-rework"
+    if (verdict or {}).get("needs_human"):
+        return "needs-human"
+    if v == "CONFIRMED":
+        return "accepted"
+    return "awaiting-prod"
 
 
 # --------------------------------------------------------------------- validate
@@ -271,17 +329,35 @@ def _line(rec: dict) -> str:
 
 def render(records: list[dict], include_all: bool) -> str:
     verdicts = load_verdicts()
+    eff = {
+        r.get("spec_id", r.get("_file", "?")): effective_status(
+            r, verdicts.get(r.get("spec_id"))
+        )
+        for r in records
+    }
+
+    def _eff(r):
+        return eff[r.get("spec_id", r.get("_file", "?"))]
+
     needs_human = [
-        r for r in records if r.get("needs_human") or r.get("status") == "unknown"
+        r
+        for r in records
+        if (
+            r.get("needs_human")
+            or r.get("status") == "unknown"
+            or _eff(r) == "needs-human"
+        )
+        and _eff(r) != "needs-rework"
     ]
+    needs_rework = [r for r in records if _eff(r) == "needs-rework"]
     outstanding = [
         r
         for r in records
         if r.get("status") in OUTSTANDING_STATUSES
         and not (r.get("needs_human") or r.get("status") == "unknown")
     ]
-    awaiting = [r for r in records if r.get("status") == "shipped"]
-    accepted = [r for r in records if r.get("status") == "accepted"]
+    awaiting_prod = [r for r in records if _eff(r) == "awaiting-prod"]
+    accepted = [r for r in records if _eff(r) == "accepted"]
     superseded = [r for r in records if r.get("status") == "superseded"]
 
     L: list[str] = []
@@ -297,6 +373,14 @@ def render(records: list[dict], include_all: bool) -> str:
         f"from {len(records)} spec record(s)._"
     )
     L.append("")
+
+    # --- prod-verified hollow: the loudest thing on the board ---
+    if needs_rework:
+        L.append(f"## ❌ NEEDS-REWORK — prod-verified hollow ({len(needs_rework)})")
+        for r in needs_rework:
+            v = verdicts.get(r.get("spec_id")) or {}
+            L.append(f"- ❌ {_line(r)} — **REJECTED** (judge: {v.get('judge', '?')})")
+        L.append("")
 
     # --- could-not-classify first (backfill ambiguity) ---
     if needs_human:
@@ -336,25 +420,14 @@ def render(records: list[dict], include_all: bool) -> str:
             L.append(f"- ○ {_line(r)} — {status}")
     L.append("")
 
-    # --- shipped, awaiting review ---
-    L.append(f"## Shipped — awaiting your review ({len(awaiting)})")
-    if not awaiting:
+    # --- shipped, awaiting prod-verification ---
+    L.append(f"## Awaiting prod-verification ({len(awaiting_prod)})")
+    if not awaiting_prod:
         L.append("_None._")
-    for r in awaiting:
-        sid = r.get("spec_id", "?")
-        v = verdicts.get(sid)
+    for r in awaiting_prod:
         card = r.get("review_card")
         suffix = f"  · card: {card}" if card else ""
-        if v and v.get("verdict") == "CONFIRMED":
-            L.append(
-                f"- ✅ {_line(r)} — **verified** (judge: {v.get('judge')}){suffix}"
-            )
-        elif v and v.get("verdict") == "REJECTED":
-            L.append(
-                f"- ❌ {_line(r)} — **REJECTED** (judge: {v.get('judge')}){suffix}"
-            )
-        else:
-            L.append(f"- 🚀 {_line(r)}{suffix}")
+        L.append(f"- 🚀 {_line(r)}{suffix}")
     L.append("")
 
     # --- accepted / superseded (only under --all, except a count) ---
@@ -574,6 +647,11 @@ def cmd_set(argv: list[str]) -> int:
 
     if a.status not in VALID_STATUS:
         return _die(f"invalid status {a.status!r} (one of {sorted(VALID_STATUS)})")
+    if a.status == "accepted":
+        return _die(
+            "accepted is computed-only — it is derived from shipped ∧ a CONFIRMED "
+            "prod verdict (see effective_status); do not set it by hand"
+        )
     path = _record_path(a.spec_id)
     if not path.exists():
         return _die(f"no ledger record {a.spec_id} — use `register` first")
@@ -647,42 +725,109 @@ def _write_verdict(path: Path, rec: dict) -> None:
 def cmd_verify(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="spec_ledger.py verify")
     ap.add_argument("spec_id")
-    ap.add_argument("verdict")
-    ap.add_argument("--judge", required=True)  # codex | claude-fallback
     ap.add_argument(
-        "--evidence", required=True
-    )  # path/ref to the typed evidence artifact
+        "verdict", nargs="?"
+    )  # optional: derived from --criterion when given
+    ap.add_argument("--judge", required=True)  # codex | claude-fallback
+    ap.add_argument("--evidence", required=True)  # ref to the typed evidence artifact
     ap.add_argument(
         "--criterion",
         action="append",
         default=[],
         metavar="ID=VERDICT",
-        help="optional per-criterion verdicts",
+        help="per-criterion verdict; spec-level verdict is DERIVED from the full map",
     )
     a = ap.parse_args(argv)
-    if a.verdict not in VALID_VERDICT:
-        return _die(f"invalid verdict {a.verdict!r} (one of {sorted(VALID_VERDICT)})")
+
     now = _now_iso()
     path = _verified_path(a.spec_id)
     rec = _load_yaml(path) if path.exists() else {"spec_id": a.spec_id, "history": []}
-    rec["verdict"] = a.verdict
-    rec["judge"] = a.judge
-    rec["evidence_ref"] = a.evidence
-    rec["at"] = now
+
     if a.criterion:
-        crit = rec.setdefault("criteria", {})
+        # Pass 1: validate all entries WITHOUT mutating crit (so a bad entry
+        # never partially applies its predecessors).
         for kv in a.criterion:
             if "=" not in kv:
                 return _die(f"--criterion must be ID=VERDICT, got {kv!r}")
+            _k, _v = kv.split("=", 1)
+            if _v not in VALID_CRITERION_VERDICT:
+                return _die(
+                    f"invalid criterion verdict {_v!r} for {_k!r} "
+                    f"(one of {sorted(VALID_CRITERION_VERDICT)})"
+                )
+        # Pass 2: all entries are valid — apply them.
+        crit = rec.setdefault("criteria", {})
+        for kv in a.criterion:
             k, v = kv.split("=", 1)
             crit[k] = v
+        spec_verdict = resolve_spec_verdict(crit)
+        # The verifier may pass a spec-level verdict only if it agrees with the
+        # derived one — we refuse a caller-supplied verdict that overrides the map.
+        if a.verdict is not None and a.verdict != spec_verdict:
+            return _die(
+                f"refusing caller-supplied spec verdict {a.verdict!r}: the criteria "
+                f"map derives {spec_verdict!r}"
+            )
+    else:
+        # Legacy path: explicit spec-level verdict, no per-criterion map.
+        if a.verdict is None:
+            return _die("verify needs either a verdict or one or more --criterion")
+        if a.verdict not in VALID_VERDICT:
+            return _die(
+                f"invalid verdict {a.verdict!r} (one of {sorted(VALID_VERDICT)})"
+            )
+        spec_verdict = a.verdict
+
+    # Item 1: do not write `verdict: null` when criteria are present but incomplete.
+    if spec_verdict is None:
+        rec.pop("verdict", None)  # clear any stale value from a prior run
+    else:
+        rec["verdict"] = spec_verdict
+    rec["judge"] = a.judge
+    rec["evidence_ref"] = a.evidence
+    rec["at"] = now
+    # history records the derived value; None means incomplete at this point in time
     rec.setdefault("history", []).append(
-        {"at": now, "verdict": a.verdict, "judge": a.judge}
+        {
+            "at": now,
+            "verdict": spec_verdict if spec_verdict is not None else "incomplete",
+            "judge": a.judge,
+        }
     )
     with _record_lock(path):  # advisory flock — same as register/set
         _write_verdict(path, rec)
-    print(f"{a.spec_id} verified -> {a.verdict}")
+    if spec_verdict is None:
+        print(f"{a.spec_id} criteria updated (no verdict yet — incomplete)")
+    else:
+        print(f"{a.spec_id} verified -> {spec_verdict}")
     return 0
+
+
+def cmd_alert(argv: list[str]) -> int:
+    """Time-based ops alert (kept OUT of --check, which must stay deterministic).
+
+    Flags any spec that has been `awaiting-prod` longer than the floor — i.e.
+    shipped but the verifier has produced no verdict. Exit 1 if any are stale.
+    """
+    ap = argparse.ArgumentParser(prog="spec_ledger.py alert")
+    ap.add_argument("--floor-hours", type=int, default=AWAITING_PROD_FLOOR_HOURS)
+    a = ap.parse_args(argv)
+
+    verdicts = load_verdicts()
+    stale: list[tuple[str, float]] = []
+    for rec in load_records():
+        if effective_status(rec, verdicts.get(rec.get("spec_id"))) != "awaiting-prod":
+            continue
+        hrs = _hours_since(_shipped_at(rec))
+        if hrs is not None and hrs > a.floor_hours:
+            stale.append((rec.get("spec_id", "?"), hrs))
+
+    if not stale:
+        print("alert OK — no spec stuck awaiting-prod.")
+        return 0
+    for sid, hrs in stale:
+        print(f"STALE: {sid} — awaiting-prod for {round(hrs / 24, 1)}d (no verdict)")
+    return 1
 
 
 # -------------------------------------------------------- observable-criterion heuristic
@@ -725,6 +870,8 @@ def main() -> int:
         return cmd_set(argv[1:])
     if argv and argv[0] == "verify":
         return cmd_verify(argv[1:])
+    if argv and argv[0] == "alert":
+        return cmd_alert(argv[1:])
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--render", action="store_true", help="render (default)")
