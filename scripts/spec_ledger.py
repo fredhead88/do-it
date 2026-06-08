@@ -317,17 +317,32 @@ def _line(rec: dict) -> str:
 
 def render(records: list[dict], include_all: bool) -> str:
     verdicts = load_verdicts()
+    eff = {
+        r.get("spec_id", r.get("_file", "?")): effective_status(
+            r, verdicts.get(r.get("spec_id"))
+        )
+        for r in records
+    }
+
+    def _eff(r):
+        return eff[r.get("spec_id", r.get("_file", "?"))]
+
     needs_human = [
-        r for r in records if r.get("needs_human") or r.get("status") == "unknown"
+        r
+        for r in records
+        if r.get("needs_human")
+        or r.get("status") == "unknown"
+        or _eff(r) == "needs-human"
     ]
+    needs_rework = [r for r in records if _eff(r) == "needs-rework"]
     outstanding = [
         r
         for r in records
         if r.get("status") in OUTSTANDING_STATUSES
         and not (r.get("needs_human") or r.get("status") == "unknown")
     ]
-    awaiting = [r for r in records if r.get("status") == "shipped"]
-    accepted = [r for r in records if r.get("status") == "accepted"]
+    awaiting_prod = [r for r in records if _eff(r) == "awaiting-prod"]
+    accepted = [r for r in records if _eff(r) == "accepted"]
     superseded = [r for r in records if r.get("status") == "superseded"]
 
     L: list[str] = []
@@ -343,6 +358,14 @@ def render(records: list[dict], include_all: bool) -> str:
         f"from {len(records)} spec record(s)._"
     )
     L.append("")
+
+    # --- prod-verified hollow: the loudest thing on the board ---
+    if needs_rework:
+        L.append(f"## ❌ NEEDS-REWORK — prod-verified hollow ({len(needs_rework)})")
+        for r in needs_rework:
+            v = verdicts.get(r.get("spec_id")) or {}
+            L.append(f"- ❌ {_line(r)} — **REJECTED** (judge: {v.get('judge', '?')})")
+        L.append("")
 
     # --- could-not-classify first (backfill ambiguity) ---
     if needs_human:
@@ -382,25 +405,14 @@ def render(records: list[dict], include_all: bool) -> str:
             L.append(f"- ○ {_line(r)} — {status}")
     L.append("")
 
-    # --- shipped, awaiting review ---
-    L.append(f"## Shipped — awaiting your review ({len(awaiting)})")
-    if not awaiting:
+    # --- shipped, awaiting prod-verification ---
+    L.append(f"## Awaiting prod-verification ({len(awaiting_prod)})")
+    if not awaiting_prod:
         L.append("_None._")
-    for r in awaiting:
-        sid = r.get("spec_id", "?")
-        v = verdicts.get(sid)
+    for r in awaiting_prod:
         card = r.get("review_card")
         suffix = f"  · card: {card}" if card else ""
-        if v and v.get("verdict") == "CONFIRMED":
-            L.append(
-                f"- ✅ {_line(r)} — **verified** (judge: {v.get('judge')}){suffix}"
-            )
-        elif v and v.get("verdict") == "REJECTED":
-            L.append(
-                f"- ❌ {_line(r)} — **REJECTED** (judge: {v.get('judge')}){suffix}"
-            )
-        else:
-            L.append(f"- 🚀 {_line(r)}{suffix}")
+        L.append(f"- 🚀 {_line(r)}{suffix}")
     L.append("")
 
     # --- accepted / superseded (only under --all, except a count) ---

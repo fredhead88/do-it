@@ -122,8 +122,13 @@ def test_set_cannot_clobber_verdict(monkeypatch, tmp_path):
 
 def test_concurrent_set_serializes(monkeypatch, tmp_path):
     sl = _load(monkeypatch, tmp_path)
-    _write(sl, "013-q", title="Q", status="registered",
-           history=[{"at": "2026-06-07T00:00:00Z", "status": "registered", "by": "h"}])
+    _write(
+        sl,
+        "013-q",
+        title="Q",
+        status="registered",
+        history=[{"at": "2026-06-07T00:00:00Z", "status": "registered", "by": "h"}],
+    )
     import threading
 
     def worker(status):
@@ -150,7 +155,8 @@ def test_render_marks_verified_from_verdict_file(monkeypatch, tmp_path):
     _write(sl, "014-v", title="Vee", status="shipped")
     sl.cmd_verify(["014-v", "CONFIRMED", "--judge", "codex", "--evidence", "x"])
     body = sl.render(sl.load_records(), include_all=True)
-    assert "014-v" in body and "verified" in body.lower()
+    # CONFIRMED verdict -> effective_status == accepted -> appears in Accepted section
+    assert "014-v" in body and "Accepted (1)" in body
 
 
 def test_render_rejected_is_outstanding(monkeypatch, tmp_path):
@@ -169,17 +175,27 @@ def test_render_rejected_is_outstanding(monkeypatch, tmp_path):
 
 def test_presence_phrased_criterion_warns(monkeypatch, tmp_path, capsys):
     sl = _load(monkeypatch, tmp_path)
-    _write(sl, "016-p", title="P", status="registered",
-           acceptance_criteria=["A metric-picker component exists on the card"])
+    _write(
+        sl,
+        "016-p",
+        title="P",
+        status="registered",
+        acceptance_criteria=["A metric-picker component exists on the card"],
+    )
     warns = sl.observable_warnings(sl.load_records())
     assert any("016-p" in w and "metric-picker" in w for w in warns)
 
 
 def test_action_observation_criterion_ok(monkeypatch, tmp_path):
     sl = _load(monkeypatch, tmp_path)
-    _write(sl, "017-a", title="A", status="registered",
-           acceptance_criteria=[
-               "Given Overview, when the user clicks the card metric menu, "
-               "then the displayed metric label changes"
-           ])
+    _write(
+        sl,
+        "017-a",
+        title="A",
+        status="registered",
+        acceptance_criteria=[
+            "Given Overview, when the user clicks the card metric menu, "
+            "then the displayed metric label changes"
+        ],
+    )
     assert sl.observable_warnings(sl.load_records()) == []

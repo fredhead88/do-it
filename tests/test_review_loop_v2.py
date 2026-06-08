@@ -152,3 +152,52 @@ def test_cmd_set_other_status_still_works(monkeypatch, tmp_path, capsys):
     rc = sl.cmd_set(["100-x", "planned", "--by", "orc"])
     capsys.readouterr()
     assert rc == 0
+
+
+def _ship(sl, sid, title="X"):
+    sl._write_record(
+        sl._record_path(sid),
+        {
+            "spec_id": sid,
+            "title": title,
+            "status": "shipped",
+            "history": [
+                {"at": "2026-06-08T00:00:00Z", "status": "shipped", "by": "orc"}
+            ],
+        },
+    )
+
+
+def test_render_rejected_goes_to_top_needs_rework(monkeypatch, tmp_path):
+    sl = _load(monkeypatch, tmp_path)
+    _ship(sl, "100-x", "Broken thing")
+    sl._write_verdict(
+        sl._verified_path("100-x"),
+        {"spec_id": "100-x", "verdict": "REJECTED", "judge": "codex"},
+    )
+    body = sl.render(sl.load_records(), include_all=False)
+    assert "NEEDS-REWORK" in body
+    top = body.split("NEEDS-REWORK")[1].split("##")[0]
+    assert "100-x" in top  # listed under the NEEDS-REWORK section
+
+
+def test_render_confirmed_is_accepted_not_awaiting(monkeypatch, tmp_path):
+    sl = _load(monkeypatch, tmp_path)
+    _ship(sl, "100-x")
+    sl._write_verdict(
+        sl._verified_path("100-x"),
+        {"spec_id": "100-x", "verdict": "CONFIRMED", "judge": "codex"},
+    )
+    body = sl.render(sl.load_records(), include_all=True)
+    assert "Accepted (1)" in body
+    # not sitting in the awaiting-prod bucket
+    awaiting = body.split("Awaiting prod-verification")[1].split("##")[0]
+    assert "100-x" not in awaiting
+
+
+def test_render_no_verdict_is_awaiting_prod(monkeypatch, tmp_path):
+    sl = _load(monkeypatch, tmp_path)
+    _ship(sl, "100-x")
+    body = sl.render(sl.load_records(), include_all=False)
+    assert "Awaiting prod-verification (1)" in body
+    assert "NEEDS-REWORK" not in body  # nothing rejected
