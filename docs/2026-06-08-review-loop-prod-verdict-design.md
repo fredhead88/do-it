@@ -1,15 +1,22 @@
-# Review Loop v2 (MVP) — Executable Rendered-Page Verdict Owns Closure
+# Review Loop v2 — Executable Rendered-Page Verdict + the Standing `rev` Session
 
-**Status:** revised post-audit 2026-06-08 · target release: v3.4.0
-**Audit:** 3 Claude lenses (correctness / operational / bloat) + Codex cross-vendor,
-2026-06-08. The first draft was cut hard: most of its mechanisms did not exist in
-the code, and as mapped to the code it *recreated* the A1 failure. This MVP keeps
-the invariant and ships the smallest executable core that actually catches A1.
+**Status:** revised after two adversarial rounds, 2026-06-08 · target release: v3.4.0
+**Audits:** two rounds, each 3 Claude lenses (correctness / operational / bloat) +
+Codex cross-vendor. Round 1 cut the design to an executable core (most of the first
+draft didn't exist in the code and, as mapped to the code, recreated A1). Round 2
+found two design holes that would let A1 recur after build (the `present` predicate;
+the not-run freeze), the relay-clone hazards, and several substrate gaps — all folded
+in below.
+**Operator decision (2026-06-08):** `rev` **is** a standing, self-relaying session
+(the operator wants continuous, clean-headed eyes on what's being scrutinized, and
+already runs many sessions). The audit's job here was not to veto that but to make a
+standing `rev` *safe*: its own relay built from scratch (never a clone bolted onto
+orc's), its own liveness watch, atomic verdict writes, and a tick lock.
 **Touches:** `scripts/spec_ledger.py` (status model, render, verify), the
-`verification-loop/` harness (`tick.mjs`, `lib/probe.mjs`, the criterion schema),
-`relay-watch/` (second pane), `skills/rev/SKILL.md` (new), `skills/orc/SKILL.md`,
-`skills/think/SKILL.md` (sheds review), `skills/verification-loop/SKILL.md`,
-`DO-IT.md` (role map). Lineage:
+`verification-loop/` harness (`tick.mjs`, `lib/probe.mjs`, card-schema parsing,
+assertion runner), a NEW `rev-watch/` relay (separate from `relay-watch/`),
+`skills/rev/SKILL.md` (new), `skills/orc/SKILL.md`, `skills/think/SKILL.md` (sheds
+review), `skills/verification-loop/SKILL.md`, `DO-IT.md` (role map). Lineage:
 [do-it v2](2026-06-02-doit-v2-design.md),
 [build-status ledger](2026-06-03-doit-build-status-ledger-design.md).
 
@@ -24,138 +31,152 @@ throw blanks the section. Nothing in the loop ever loaded the rendered page as a
 user. Every hollow defect caught by hand that day (558% coverage on the multi-FC
 toggle, broken returns thumbnails, overflow) was the same render/interaction class.
 
-## The invariant (unchanged)
+## The invariant
 
 > **A spec is closed only by an independent, *executable* observation of the
 > rendered, deployed product — never by the builder's evidence, a re-run of it, or
 > an LLM asked "does this look right?"**
 
-The audit's central lesson: an LLM reading a whole-page text dump and judging
-"looks satisfied" has the *same* structural weakness as the curl→grader gate it
-replaces. The fix is a deterministic assertion, with the LLM demoted to a
-secondary, bounded role.
+An LLM reading a whole-page text dump and judging "looks satisfied" has the *same*
+structural weakness as the curl→grader gate it replaces. The fix is a deterministic
+assertion, with the LLM demoted to a secondary, bounded role.
 
-## What the audit changed (so the next reader knows why this is small)
+## What the two audits established (so the next reader knows why these choices)
 
-The first draft assumed a substrate that isn't there:
+The current code does not yet have the substrate the invariant needs:
 
-- The verifier writes a **single spec-level** `verdict` and writes `CONFIRMED`
-  inside the per-criterion loop on *any* confirmed criterion — so a spec with one
-  hollow criterion still resolves `accepted`. **It recreates A1.**
-- HOLLOW/MISSING/REGRESSION criteria only append to `NEEDS-HUMAN.jsonl`; they
-  **never write `REJECTED`** — so a derived join has no input.
-- `dom_assertion` was prose handed to an LLM; **nothing executes it.** probe.mjs
-  captures a whole-page aria dump + screenshot; the vision judge is handed a
-  *string saying a screenshot exists*, not image bytes.
-- The verifier **never reads the card schema** (`criterion_type`, `evidence_type`,
-  `eyeball`); `loadCriteria()` regex-guesses from prose — so "curl auto-fails a UI
-  criterion" was unenforceable.
-- `deployed_sha` falls back to local `git HEAD` (the committed sha, not the running
-  process) — the SHA gate would "confirm" against a stale binary.
-- `DOM_INTERACTION` is silently downgraded to static DOM — `interaction_traces`
-  are never driven.
-- **The verifier cron is not installed on the box** — it is not running at all.
-- `accepted` is still a hand-writable status; `rework_count`, `severity`, the
-  `NEEDS-REWORK` section, `awaiting-prod` do not exist.
-
-So the MVP fixes the *substrate* and ships one executable enforcement point.
-Anticipatory machinery is deferred until the loop demonstrably works once.
+- The verifier writes a **single spec-level** `verdict` and writes `CONFIRMED` inside
+  the per-criterion loop on *any* confirmed criterion → a spec with one hollow
+  criterion still resolves `accepted`. **It recreates A1.**
+- HOLLOW/MISSING/REGRESSION criteria only append to `NEEDS-HUMAN.jsonl`; they **never
+  write `REJECTED`** → a derived join has no negative input.
+- `dom_assertion` was prose handed to an LLM; **nothing executes it.** `probe.mjs`
+  captures a whole-page aria dump + screenshot; the vision judge gets a *string
+  saying a screenshot exists*, not image bytes.
+- The verifier **never reads the card schema**; `loadCriteria()` regex-guesses type
+  from prose → "curl auto-fails a UI criterion" is unenforceable.
+- `deployed_sha` falls back to local `git HEAD` → a SHA gate would "confirm" a stale
+  binary. `DOM_INTERACTION` is silently downgraded → `interaction_traces` never run.
+- **The verifier cron is not installed** — nothing ticks today.
+- `accepted` is still hand-writable; the relay watcher (`relay-watch/`) is hardwired
+  to orc (`/tmp/orc-active`, reboots with `/orc`) — cloning it naively would reboot a
+  `rev` pane **as an orchestrator** (two orcs, one checkout).
+- Round 2 design holes: `dom_assertion: present` passes on a blank-but-mounted
+  container (A1 recurs); "CONFIRMED iff none not-run" freezes a spec forever when a
+  criterion is legitimately unobservable.
 
 ## What we keep from today (do not regress)
 
-- **Card as a 1:1 spec mirror** — one row per acceptance criterion. Real forcing
-  function, the diffable artifact.
+- **Card as a 1:1 spec mirror** — one row per acceptance criterion. The diffable
+  forcing function.
 - **The blind grader's independence** for backend/reproducible criteria.
 - **Finding → registered spec drains reliably** (558% → 109, transfer_out → 106).
-- **The human page spot-check stays** — but it moves to a dedicated home (`rev`,
-  see Roles), not the thinker. It is the only path that has caught A1, so it stays a
-  standing check; what is deferred is *closure on the verifier alone* (a
-  compressed-verdict-only flow), never the check itself.
+- **The human page spot-check** — now owned by `rev` (see Roles), kept in the closure
+  path; what's deferred is closure on the verifier *alone*.
 
-## The spine (unchanged): terminal state is *derived*, never hand-written
+## The spine: terminal state is *derived*, never hand-written
 
-The 076 rule stands: the verifier must never mutate the build ledger. So
-"the verifier owns the verdict" means the build ledger keeps orc's lifecycle
-(`registered → … → merged → shipped`), the verifier writes **only**
-`ledger/verified/<spec_id>.yml`, and the rendered view computes closure by joining
-the two. The two-ledger disagreement becomes un-representable.
+The 076 rule stands: the verifier must never mutate the build ledger. The build
+ledger keeps orc's lifecycle (`registered → … → merged → shipped`); the verdict is
+written **only** to `ledger/verified/<spec_id>.yml`; the rendered view computes
+closure by joining the two, so the two-ledger disagreement is un-representable.
 
-| build status | computed `verified/<id>.yml` spec verdict     | effective status            |
-|--------------|-----------------------------------------------|-----------------------------|
-| `shipped`    | `CONFIRMED` (every criterion confirmed)       | `accepted`                  |
-| `shipped`    | `REJECTED` (any criterion failed)             | `needs-rework` (loud, top)  |
-| `shipped`    | none yet                                       | `awaiting-prod`             |
-| `shipped`    | none + open `needs-human`                      | `needs-human`               |
-| < `shipped`  | (any)                                          | orc's build status, as today|
+| build status | computed `verified/<id>.yml` spec verdict   | effective status            |
+|--------------|---------------------------------------------|-----------------------------|
+| `shipped`    | `CONFIRMED` (all observable criteria pass)  | `accepted`                  |
+| `shipped`    | `REJECTED` (any criterion failed)           | `needs-rework` (loud, top)  |
+| `shipped`    | none yet / incomplete                       | `awaiting-prod`             |
+| `shipped`    | none + open `needs-human`                   | `needs-human`               |
+| < `shipped`  | (any)                                       | orc's build status, as today|
 
-## Roles: `orc` does, `rev` reviews (the standing pair)
+## Roles: `orc` does, `rev` reviews — two standing, self-relaying sessions
 
-The review role becomes **first-class** — a persistent session that *only*
-reviews, sitting next to orc the way a pair does: one builds, one reviews.
+- **`rev` — the standing review session (new).** Boots with `/rev`; a session you
+  watch and chat with. It is the continuous supervisor of the verification loop: it
+  reads each tick's rendered-page evidence, runs spot-checks, **writes the per-criterion
+  `REJECTED`/`CONFIRMED` verdicts** (via `cmd_verify` into the verifier namespace —
+  this does *not* touch the build ledger, so 076 holds), files correctives for orc,
+  and surfaces the board to the operator. It never touches the build tree, never
+  commits, never authors specs.
+- **Cron ticks; `rev` supervises — and a lock makes them safe.** The deterministic
+  Playwright ticks run on a **cron** (always-on, survives any `rev` reboot). `rev`
+  may also trigger an ad-hoc tick when it wants one. Every tick takes a **lockfile**,
+  so cron and `rev` can never run Playwright concurrently (no double-run, no torn
+  state on the 1-vCPU box). `rev` is the judgment + liveness on top; the executable
+  assertion owns the mechanical verdict.
+- **`rev` self-relays via its OWN mechanism, built from scratch — not a clone of
+  orc's.** A separate `rev-watch/` with its own sentinel (`/tmp/rev-active`), its own
+  due-glob, its own relay baton (`docs/sessions/rev-relay.md`), its own log/lock, and
+  a hardcoded `/rev` boot — so the watcher physically *cannot* reboot a `rev` pane as
+  `/orc`. `rev`'s boot arms `/tmp/rev-active` **and clears stale `rev` sentinels for
+  its pane** (the v3.2.1 stale-sentinel fix, applied to `rev` from day one).
+- **`rev` has its own liveness watch.** A standing session can't report its own
+  death, and the verifier's dead-man's switch only watches *the verifier*. A small
+  external check surfaces `REV_DOWN` (and orc's first-moves notes `REV: pane dead` if
+  `/tmp/rev-active` no longer maps to a live pane). Two standing sessions ⇒ two things
+  that can die silently ⇒ two watches.
+- **`rev` writes only to safe places.** The verifier namespace
+  (`~/.claude/ledger/verified/`), the verifier `runs/` dir, and its own relay baton.
+  It never writes into a project source tree orc may be mid-commit on.
+- **`think` sheds the review shape** → pure intake / brainstorm / spec-authoring; its
+  "Shape B — Review" moves to `rev`. DO-IT.md's role map becomes orc / rev / think.
 
-- **`rev` — the review session (new).** Boots with `/rev`. It is the brain that
-  *drives* the verification-loop: it runs the ticks, reads the rendered-page
-  evidence, performs the human spot-check, and files correctives / writes the
-  `REJECTED` verdicts that flip specs to `needs-rework`. It is the standing "second
-  body" that notices when orc stops consuming correctives or when the verifier dies.
-  It never touches the build tree or commits (that is orc's alone) and never authors
-  specs (the 076 rule) — an unhappy review produces a corrective for orc, or a memo.
-- **`rev` self-relays exactly like orc.** It gets the same context-watch →
-  auto-`/clear` → reboot loop, generalized from orc's `relay-watch/`
-  (`orc-token-watch.py` + `relay-watch.sh`) by parameterizing the watcher on a
-  second pane sentinel (`/tmp/rev-active`) that reboots with `/rev`. orc and rev are
-  the two standing, self-clearing panes; `think` is on-demand.
-- **`think` sheds the review shape.** With `rev` owning review, the thinker returns
-  to pure intake / brainstorm / spec-authoring. Its old "Shape B — Review" is
-  removed and re-homed in `rev`.
-- **The autonomous engine stays.** `verification-loop/tick.mjs` (Playwright + the
-  deterministic assertions) is `rev`'s *hands*; `rev` is the *judgment + liveness*
-  on top. The executable assertion still owns the mechanical verdict; `rev` owns the
-  residual taste calls and keeps the loop alive and consumed.
+## The MVP
 
-## The MVP — six items
+### 1. The verifier runs, with dead-man's switches for *both* the verifier and `rev`
 
-### 1. The verifier actually runs, with a dead-man's switch
-
-Nothing else matters if it's dead. Install the cron from `verification-loop/SETUP.md`
-on the box. Add a **liveness sentinel**: a small check (its own cron) that fails
-loudly — appends a `VERIFIER_DOWN` line surfaced by `spec_ledger.py render` and
-notifies — if `PROGRESS.jsonl` has not advanced in > 90 minutes (3 missed 30-min
-ticks). The verifier cannot self-report being dead, so the watchdog is a separate
-process from the verifier.
+Install the cron from `verification-loop/SETUP.md`. Add a **liveness sentinel** (its
+own cron) that surfaces `VERIFIER_DOWN` via `spec_ledger.py render` if `PROGRESS.jsonl`
+has not advanced in > 90 minutes (3 missed 30-min ticks), and `REV_DOWN` if
+`/tmp/rev-active` no longer maps to a live pane. Both watchdogs are separate processes
+from the things they watch. (No-cost hygiene on the small box: run the tick's Chromium
+under `systemd-run --scope -p MemoryMax=1G`, and offset the tick off the pipeline
+windows.)
 
 ### 2. Executable DOM assertions per UI criterion; LLM demoted to secondary
 
 - A `criterion_type: ui` carries a **machine-readable** `dom_assertion`:
-  `{ url, selector, predicate, forbid_console }` where `predicate` is one of
-  `present | min_rows:N | text_matches:<re> | count_gte:N`, and `forbid_console`
-  lists patterns that must NOT appear in the console (e.g. `ZodError`,
-  `Unhandled`). This is the field A1 needed.
-- The verifier **runs the assertion in Playwright** (`page.locator(selector)`,
-  `.count()`, console capture) **before any LLM**. Fail → write `REJECTED` for that
-  criterion. A `curl`/`grep` is an auto-fail for a `ui` criterion — now enforceable
-  because the verifier reads the field.
-- **The verifier must parse the card schema**, not regex-guess from prose:
-  `loadCriteria()` reads the review-card `components` rows (`criterion_type`,
-  `dom_assertion`, `evidence_type`). One machine-readable criterion schema, shared
-  by handover/card/verifier.
-- The LLM judge becomes **secondary**: only for bounded visual questions, and only
-  when handed real evidence. It can never *override* a failed deterministic
-  assertion to CONFIRMED.
-- `eyeball` collapses into `criterion_type`: a `ui` criterion *requires* the
-  rendered assertion; there is no separate, route-around-able `eyeball` flag.
+  `{ url, selector, predicate, forbid_console }`. `predicate` ∈
+  `min_rows:N | count_gte:N | text_matches:<re>` for content-bearing sections.
+  **`present` alone is forbidden for `ui` criteria** — a blank-but-mounted container
+  satisfies `present`, which is exactly the A1 failure. `forbid_console` must include
+  `["ZodError","Unhandled"]` for render-throw classes.
+- The verifier **runs the assertion in Playwright** (`page.locator(selector).count()`,
+  console capture) **before any LLM**. Fail, **or a selector that matches 0
+  elements**, → `REJECTED` for that criterion. A `curl`/`grep` auto-fails a `ui`
+  criterion.
+- **The verifier parses the card schema** (`loadCriteria()` follows the ledger
+  `review_card` pointer and reads the `components` rows: `criterion_type`,
+  `dom_assertion`, `evidence_type`) — no prose regex for closure. It **fails closed**:
+  a UI criterion with no `dom_assertion` row cannot reach CONFIRMED.
+- **`orc` authors the `dom_assertion` at card-write time**, not the thinker at
+  spec-write time — orc has loaded the rendered page and can pick a stable
+  **`data-testid`** selector and a non-trivial predicate. Selectors must be
+  `data-testid` (orc adds the attribute when missing), never structural CSS, so they
+  don't rot silently. This keeps `dom_assertion` from becoming the new ignored
+  `eyeball: yes`.
+- The LLM judge is **secondary**: bounded visual questions, real evidence only; it can
+  never override a failed deterministic assertion to CONFIRMED.
+- `eyeball` collapses into `criterion_type` — no separate route-around-able flag.
 
 ### 3. Per-criterion verdicts + an aggregation rule (REJECTED actually written)
 
-- Stop writing spec-level `CONFIRMED` inside the per-criterion loop. Persist
-  **per-criterion** verdicts in `verified/<id>.yml` under a `criteria:` map
-  (extend `cmd_verify` to take/record `--criterion <id>=<verdict>`).
-- **Aggregation rule:** spec verdict = `CONFIRMED` **iff every criterion is
-  CONFIRMED and none is REJECTED/not-run**; `REJECTED` if any criterion is REJECTED;
-  otherwise no spec verdict yet (→ `awaiting-prod`). Write the spec-level verdict
-  once, derived from the map — never as a side effect of the first green criterion.
-- On any criterion failure, a durable `REJECTED` reaches `verified/` — the input
-  the join needs. (Today failures only hit `NEEDS-HUMAN.jsonl`.)
+- Stop writing spec-level `CONFIRMED` in the per-criterion loop. Persist
+  **per-criterion** verdicts in `verified/<id>.yml` under a `criteria:` map;
+  `cmd_verify` accepts only `--criterion <id>=<verdict>` from the verifier and
+  **computes the spec-level verdict from the full map** (it refuses a caller-supplied
+  spec-level verdict).
+- **Aggregation rule:** spec = `CONFIRMED` iff every observable criterion is CONFIRMED
+  and none REJECTED; `REJECTED` if any criterion REJECTED; else no spec verdict yet
+  (→ `awaiting-prod`). A criterion that is genuinely unobservable (no test-tenant
+  data) is marked **`not-applicable`** (by `rev`, with a reason) and **excluded** from
+  the "every criterion" test — so one perpetual data-gap can't freeze a spec forever.
+  A spec with any `not-applicable` renders `accepted (incomplete: N)` so the gap is
+  visible, never hidden.
+- Any criterion failure (assertion or judge) writes a durable `REJECTED` to
+  `verified/` — the input the join needs. Writes are **atomic (tmp-then-rename)** so a
+  `rev`/cron context-reset can't tear a verdict file; `render` reads each `verified/`
+  file in a try/except so one malformed file can't block the whole board.
 
 ### 4. Derived join in the render; `accepted` no longer hand-writable
 
@@ -163,88 +184,94 @@ process from the verifier.
   the effective-status column per the table, prints a top
   **`❌ NEEDS-REWORK (prod-verified hollow)`** section, and labels the normal
   post-deploy resting state `awaiting-prod`.
-- **`accepted` becomes computed-only:** remove it from the writable lifecycle —
-  `cmd_set` refuses `accepted` (it is derived), and the old
-  `set <id> accepted --by think-review` instruction is removed from the skills.
-- **Loudness floor:** `render`/`--check` flags any spec `awaiting-prod` for
-  > 48h with no `PROGRESS.jsonl` advance — so `awaiting-prod` can't become a quiet
-  graveyard (the failure mode that replaced the 33-card backlog otherwise).
+- **`accepted` is computed-only:** `cmd_set` refuses `accepted` with a direct error;
+  the old `set <id> accepted --by think-review` instruction is removed. Existing
+  records already at `status: accepted` are migrated/displayed as **legacy-accepted**
+  so `--check` doesn't break on them.
+- **Loudness floor as a *separate* alert, not `--check`.** A new
+  `spec_ledger.py alert` (run by the liveness cron + shown in `render`) flags any spec
+  `awaiting-prod` > 48h with no `PROGRESS.jsonl` advance. It is **not** in `--check` —
+  `--check` must stay deterministic for CI (a green run today must not fail in 49h).
 
-### 5. Route `NEEDS-HUMAN` into the ledger view
+### 5. Route `NEEDS-HUMAN` into the ledger view — with resolution state
 
-`NEEDS-HUMAN.jsonl` is a flat file in `runs/` that orc's first-moves never reads —
-the corrective→orc pipeline the thinker used to bridge. `render` consumes
-`NEEDS-HUMAN.jsonl` and projects unresolved escalations into the board, so orc sees
-correctives in its normal first-moves scan, and `rev` (item 6) is the standing
-session that ensures they get consumed — closing the Two-Body gap.
+`NEEDS-HUMAN` items are date-sharded in `runs/<date>/` with no "resolved" marker, so a
+naive render would either miss old ones or spam stale ones. Instead, **promote
+unresolved escalations into the verdict namespace** (a `needs_human:` block on
+`verified/<id>.yml`, or a durable `ledger/needs-human/` store with ids + resolution
+state). `render` projects the *unresolved* set into the board; orc consumes them in
+first-moves and `rev` ensures they get consumed. No scraping of unbounded date dirs.
 
-### 6. The `rev` session — orc's paired review twin, self-relaying
+### 6. The `rev` session + its own relay (built from scratch)
 
-Stand up `rev` as a first-class role (see Roles above):
-
-- A `rev` skill (`skills/rev/SKILL.md`) booting the review session: drive the
-  verifier, read rendered evidence, spot-check, file correctives / write `REJECTED`,
-  hand the operator the compressed verdict. Read-only on code, never commits, never
-  authors specs.
-- Generalize `relay-watch/` to a second pane: the watcher arms on `/tmp/rev-active`
-  and reboots that pane with `/rev` on the same context-ceiling trigger orc uses.
-  orc and rev are the two standing self-clearing panes.
-- Remove "Shape B — Review" from `skills/think/SKILL.md`; the thinker is now pure
-  intake/authoring. Update DO-IT.md's role map (3 roles → orc / rev / think, with
-  rev as the standing review twin).
+- `skills/rev/SKILL.md`: boots the standing review session per Roles — supervise the
+  loop, read rendered evidence, spot-check, write `REJECTED`/`CONFIRMED`/`not-applicable`
+  per criterion, file correctives, hand the operator the board. Read-only on code.
+- `rev-watch/` (new, separate from `relay-watch/`): a role-parameterized relay — own
+  sentinel `/tmp/rev-active`, own due-glob, own baton `docs/sessions/rev-relay.md`,
+  own log/lock, boot `/rev`. The relay scripts take `ROLE / ACTIVE_FILE / DUE_GLOB /
+  RELAY_FILE / BOOT_COMMAND / LOG / LOCK` so orc's and rev's never cross. `rev`'s boot
+  arms its sentinel and clears its own stale sentinels.
+- Remove "Shape B — Review" from `skills/think/SKILL.md`; update DO-IT.md's role map
+  to orc / rev / think.
 
 ## Deferred — and the condition to revisit each
 
-- **`deployed_sha` staleness gate** — needs a real per-surface version endpoint
-  (`/version` returning the *running* sha); local `git HEAD` is a no-op.
-  *Residual risk accepted for MVP:* a stale Hetzner binary / Vercel lag can still be
-  judged; partly mitigated by item 2's `forbid_console` + probe's existing 502
-  retry. **Revisit first**, once a `/version` endpoint exists.
+- **`deployed_sha` staleness gate** — needs a real per-surface `/version` endpoint
+  returning the *running* sha. **Concrete MVP interim (not just "accepted risk"):** a
+  minimum **10-minute delay** between a spec's `shipped` timestamp and its first
+  verifier tick, so a Vercel/Hetzner deploy is actually live before assertion. Revisit
+  with a real `/version` gate (then: no `CONFIRMED` without a SHA match).
 - **`interaction_traces` + Playwright interaction driver** — `DOM_INTERACTION` is
   unimplemented; the human exploratory pass already caught the 558% class. Revisit
   after the DOM-assertion path is proven on ≥5 real specs.
 - **`rework_count` dance ceiling** — `rework` has never fired once; don't build a
   ceiling for a loop that hasn't run. Revisit after rework fires on ≥2 specs.
-- **`severity` P0–P3 + drain rule** — real triage value but unrelated to A1 and
-  prone to inflation; revisit as a small follow-on (P0/P1/P2, default P2, sort not
-  hard-gate).
-- **Closure on the verifier alone** (compressed-verdict-only, dropping `rev`'s
-  rendered-page spot-check from the closure path) — revisit once the executable
-  verifier is proven on ≥5 real specs. *Narrowing the thinker* off review is done in
-  this release; what stays for now is `rev`'s human spot-check.
-- **Vision judge with real image bytes** — known weakness; item 2 demotes the LLM
-  so it matters less. Track it; fix alongside the interaction driver.
+- **`severity` P0–P3 + drain rule** — real triage value but unrelated to A1 and prone
+  to inflation; revisit as a small follow-on (P0/P1/P2, default P2, sort not gate).
+- **Closure on the verifier alone** (dropping `rev`'s spot-check from the closure
+  path) — revisit once the executable verifier is proven on ≥5 real specs.
+- **Vision judge with real image bytes** — known weakness; item 2 demotes the LLM so
+  it matters less. Fix alongside the interaction driver.
 
 ## Acceptance criteria
 
-1. **A1 is the proof.** With the executable assertion for 106's region-flow
-   criterion, a forced verifier tick writes `REJECTED` to `ledger/verified/106-*.yml`,
-   and `spec_ledger.py render` shows 106 under the top `NEEDS-REWORK` section, never
-   `accepted`. (End-to-end, on the real deployed page.)
-2. The verifier cron is installed and a liveness sentinel surfaces `VERIFIER_DOWN`
-   when `PROGRESS.jsonl` is stale > N minutes. Demonstrated by stopping the verifier
-   and seeing the flag.
+1. **A1 is the proof.** With an executable `dom_assertion` (`min_rows`/`text_matches`,
+   `forbid_console:[ZodError]`) for 106's region-flow criterion, a forced tick writes
+   a per-criterion `REJECTED` to `ledger/verified/106-*.yml`, the aggregation makes the
+   spec `REJECTED`, and `render` shows 106 under the top `NEEDS-REWORK` section, never
+   `accepted`. End-to-end, on the real deployed page.
+2. The verifier cron is installed; the liveness cron surfaces `VERIFIER_DOWN` when
+   `PROGRESS.jsonl` is stale > 90 min, and `REV_DOWN` when `/tmp/rev-active` maps to no
+   live pane. Demonstrated by stopping each.
 3. A `criterion_type: ui` cannot reach a `CONFIRMED` per-criterion verdict without a
-   passing executable `dom_assertion`; a curl-only UI criterion auto-fails. The
-   verifier reads `criterion_type`/`dom_assertion` from the card schema (no prose
-   regex for closure). Test covers both.
-4. Spec-level verdict is computed from the per-criterion `criteria:` map by the
-   aggregation rule; a spec with ≥1 REJECTED criterion is `REJECTED` even if others
-   are CONFIRMED. A unit test asserts the aggregation and the full join table.
-5. Any criterion failure writes a durable `REJECTED` to `verified/`; nothing relies
-   on `NEEDS-HUMAN.jsonl` to represent a rejection.
-6. `accepted` is computed-only: `cmd_set accepted` is refused; no skill instructs a
-   hand-write; `accepted` renders solely from `shipped ∧ CONFIRMED`. Test covers the
-   refusal.
-7. `render` shows a top `NEEDS-REWORK` section and an `awaiting-prod` bucket; `--check`
-   fails on any spec `awaiting-prod` > 48h with no progress. Test covers the floor.
-8. `render` projects unresolved `NEEDS-HUMAN.jsonl` escalations into the board; orc's
-   first-moves doc states it reads them.
-9. A `rev` session boots from `skills/rev/SKILL.md` and drives the verifier;
-   `relay-watch` arms on `/tmp/rev-active` and reboots that pane with `/rev` on the
-   context-ceiling trigger (demonstrated by an arming + reboot cycle). "Shape B —
-   Review" is removed from the think skill, and DO-IT.md's role map reads
-   orc / rev / think.
+   passing executable `dom_assertion`; `present`-only is rejected for ui; a 0-match
+   selector is `REJECTED`; a curl-only ui criterion auto-fails; a ui criterion with no
+   `dom_assertion` row fails closed. The verifier reads the card-schema `components`
+   (no prose regex). Tests cover each.
+4. The spec verdict is computed in `cmd_verify` from the `criteria:` map; a
+   caller-supplied spec-level verdict is refused; a spec with ≥1 REJECTED criterion is
+   REJECTED even if others CONFIRMED; a `not-applicable` criterion is excluded from
+   the all-pass test and renders `accepted (incomplete:N)`. Unit test asserts the
+   aggregation and the full join table.
+5. Any criterion failure writes a durable, **atomic** `REJECTED` to `verified/`;
+   `render` tolerates a malformed `verified/` file without aborting; nothing relies on
+   `NEEDS-HUMAN.jsonl` to represent a rejection.
+6. `accepted` is computed-only: `cmd_set accepted` is refused; no skill hand-writes it;
+   legacy `accepted` records are migrated/displayed without breaking `--check`. Test
+   covers the refusal.
+7. `render` shows a top `NEEDS-REWORK` section and an `awaiting-prod` bucket; the 48h
+   loudness floor lives in `spec_ledger.py alert`, **not** `--check` (a `--check` run
+   is time-invariant). Tests cover both.
+8. Unresolved escalations are promoted to a durable store with resolution state and
+   projected into the board; orc's first-moves doc states it reads them; resolved ones
+   drop off.
+9. `rev` boots from `skills/rev/SKILL.md`; `rev-watch/` (separate from `relay-watch/`)
+   arms `/tmp/rev-active`, clears its own stale sentinels, and reboots the pane with
+   `/rev` (never `/orc`) on the context-ceiling trigger — demonstrated by an
+   arming+reboot cycle that does **not** disturb orc's pane. Cron and `rev` ticks are
+   mutually excluded by a lock. "Shape B — Review" is removed from think; DO-IT.md's
+   role map reads orc / rev / think.
 10. DO-IT.md, CHANGELOG (v3.4.0), and the DESIGN.md decision log are updated; deferred
     items and their revisit conditions are recorded.
 
@@ -253,6 +280,6 @@ Stand up `rev` as a first-class role (see Roles above):
 - The deferred list above (each with its named revisit trigger).
 - Replacing Playwright; re-architecting the cross-vendor judge.
 - Number-allocation (shipped v3.3.0).
-- AS-instance rollout choreography beyond the standing rule: land + deploy the
-  `spec_ledger.py`/verifier changes in `/opt/albert-scott` first, then flip skills;
-  never touch that tree while an orc owns it.
+- AS-instance rollout beyond the standing rule: land + deploy the
+  `spec_ledger.py`/verifier/`rev-watch` changes in `/opt/albert-scott` first, then
+  flip skills; never touch that tree while an orc owns it.
