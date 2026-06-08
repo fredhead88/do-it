@@ -36,6 +36,7 @@ import { parseArgs } from 'node:util';
 
 import { loadConfig, runDir, ROOT } from './lib/config.mjs';
 import { criteriaFromCard, validateCriterion } from './lib/cardschema.mjs';
+import { runDomAssertion } from './lib/assert-dom.mjs';
 import { selfcheck } from './lib/selfcheck.mjs';
 import { acquire } from './lib/auth.mjs';
 import { probe } from './lib/probe.mjs';
@@ -323,6 +324,43 @@ async function callSpecLedgerVerify(specId, verdict, judge, evidenceRef) {
 
 /** Observe a single criterion and return { verdict, evidenceRef, judgeResult }. */
 async function observeCriterion(criterion, cfg, statePath, dir, periodLabel) {
+  // Fail-closed: a ui criterion whose card schema was invalid is REJECTED outright.
+  if (criterion.schema_error) {
+    return { layer: 'DOM_ASSERT', evidenceRef: null,
+      judgeResult: { token: 'NOT_SATISFIED', reason: criterion.schema_error, judge: 'schema', unclear: false } };
+  }
+
+  // Executable assertion BEFORE any LLM for ui criteria with a dom_assertion.
+  if (criterion.criterion_type === 'ui' && criterion.dom_assertion) {
+    const a = criterion.dom_assertion;
+    const pagePath = cfg.page_map[a.page] || a.page;
+    const url = cfg.prod_base + pagePath;
+    const { chromium } = await import('playwright');
+    const browser = await chromium.launch({ headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    const ctx = await browser.newContext({ storageState: statePath });
+    const page = await ctx.newPage();
+    const consoleErrors = [];
+    page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
+    let res;
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+      await page.locator('main, [role="main"], #__next').first().waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+      res = await runDomAssertion(page, a, consoleErrors);
+    } catch (e) {
+      res = { pass: false, reason: `assertion error: ${e.message}`, observed: {} };
+    } finally {
+      await browser.close();
+    }
+    const evidenceFile = path.join(dir, 'evidence', `${criterion.id}-${periodLabel}.json`);
+    fs.mkdirSync(path.join(dir, 'evidence'), { recursive: true });
+    fs.writeFileSync(evidenceFile, JSON.stringify({ criterion: criterion.text, layer: 'DOM_ASSERT', url, assertion: a, result: res, at: new Date().toISOString() }, null, 2));
+    return {
+      layer: 'DOM_ASSERT',
+      evidenceRef: evidenceFile,
+      judgeResult: { token: res.pass ? 'SATISFIED' : 'NOT_SATISFIED', reason: res.reason, judge: 'dom-assert', unclear: false },
+    };
+  }
+
   const layer = selectObservationLayer(criterion.text);
   const evidenceName = `${criterion.id}-${periodLabel}`;
 

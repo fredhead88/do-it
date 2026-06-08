@@ -27,6 +27,12 @@ export function validateCriterion(c) {
   return null;
 }
 
+/** A criterion that failed schema validation cannot be confirmed — it is REJECTED
+ *  (fail closed). Returns 'REJECTED' for a non-empty error, else null. */
+export function verdictForSchemaError(err) {
+  return err ? 'REJECTED' : null;
+}
+
 /** Parse a review card's criteria block and validate each. Returns
  *  { criteria: [...] | null, errors: [...] }. `criteria` is null when the card has
  *  no machine block (caller falls back to prose parsing). */

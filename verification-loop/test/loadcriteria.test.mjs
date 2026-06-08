@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { criteriaFromCard } from '../lib/cardschema.mjs';
+import { criteriaFromCard, verdictForSchemaError } from '../lib/cardschema.mjs';
 
 const CARD = [
   '```yaml verifier:criteria',
@@ -21,4 +21,9 @@ test('criteriaFromCard returns parsed criteria and surfaces validation errors', 
 test('criteriaFromCard on a card with no block returns null criteria', () => {
   const { criteria } = criteriaFromCard('no block here');
   assert.equal(criteria, null);
+});
+
+test('a ui criterion with a schema_error resolves to REJECTED, never CONFIRMED', () => {
+  assert.equal(verdictForSchemaError('ui criterion c2 requires a dom_assertion'), 'REJECTED');
+  assert.equal(verdictForSchemaError(null), null);  // no error -> normal flow
 });
