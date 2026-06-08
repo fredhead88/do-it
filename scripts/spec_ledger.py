@@ -374,6 +374,10 @@ def render(records: list[dict], include_all: bool) -> str:
         f"from {len(records)} spec record(s)._"
     )
     L.append("")
+    for flag in load_liveness():
+        L.append(f"> 🚨 **{flag}**")
+    if load_liveness():
+        L.append("")
 
     # --- prod-verified hollow: the loudest thing on the board ---
     if needs_rework:
@@ -719,6 +723,18 @@ def load_needs_human() -> list[dict]:
         rec = _load_yaml(path)
         if not rec.get("resolved"):
             out.append(rec)
+    return out
+
+
+def load_liveness() -> list[str]:
+    """Active dead-man's-switch flags written by relay-watch/liveness.sh."""
+    d = LEDGER_DIR / "liveness"
+    if not d.exists():
+        return []
+    out = []
+    for p in sorted(d.iterdir()):
+        if p.is_file():
+            out.append(f"{p.name}: {p.read_text().strip()}")
     return out
 
 
