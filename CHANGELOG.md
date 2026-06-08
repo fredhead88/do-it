@@ -8,6 +8,21 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.2.2] — 2026-06-08
+
+### Fixed
+- **Number-allocation date-stem bug (recurring).** The hand-rolled allocator
+  (`grep -oP '^\d{3}'` then max+1) matched the first three digits of *any*
+  string, so grandfathered date-stem files (`2026-05-31-...`) read as "202" and
+  allocated ~203 — and once a bad `203-` file existed it became the new max and
+  poisoned every future allocation (it had already bitten the brief allocator:
+  brief `203-fc-level-inventory-tracking`, which leaked `source_brief: 203` into
+  a spec). Fix: `grep -oP '^[0-9]{3}(?=-)'` — the `(?=-)` lookahead requires a
+  hyphen right after the three digits, so the year no longer matches. The
+  `spec-handover` and `think` skills now carry the exact command, scan every bus
+  dir (briefs + specs share one number space), and refuse an allocation ≥150.
+  The naming doctrine in `DO-IT.md` §2 records the gotcha.
+
 ## [3.2.1] — 2026-06-07
 
 ### Fixed

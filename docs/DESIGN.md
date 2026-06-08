@@ -281,6 +281,16 @@ decision below.** Never silently. The system evolves the way you work.
   done), the status board gets a dedicated `REWORK:` line that leads when non-empty, and
   the renderer surfaces it in the outstanding bucket. Same spec record round-trips
   `shipped → rework → shipped`; no new number.
+- **2026-06-08 — number allocation matches `^[0-9]{3}(?=-)`, not `^\d{3}`.** The
+  hand-rolled allocator grabbed the first three digits of any string, so
+  grandfathered date-stem files (`2026-...`) read as "202" and allocated ~203;
+  worse, the error was self-poisoning — a bad `203-` file became the new max and
+  propagated forward (it bit the brief allocator and leaked `source_brief: 203`
+  into a spec). The `(?=-)` lookahead requires a hyphen right after the three
+  digits so a year can't match. Chosen over stripping date-stems from the bus
+  (they're deliberately grandfathered) or a numeric-range filter (more brittle
+  than the one-character anchor). Allocators also scan every bus dir — briefs and
+  specs share one number space — and refuse a max ≥150 as a poison tripwire.
 
 ## Rejected alternatives
 

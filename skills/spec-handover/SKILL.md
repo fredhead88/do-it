@@ -22,9 +22,29 @@ either is missing, do **not** hand over — say why and send the user back to fi
 
 ## The action
 
-1. **Allocate the number.** `NNN = max(live + _archive in spec-inbox) + 1`,
-   zero-padded to 3. (Pre-2026-06-03 date-stem specs count as 0 — fresh numbering
-   starts at `001`.)
+1. **Allocate the number — use this exact command, do NOT hand-roll a grep.**
+   `NNN = max(existing numbered bus items) + 1`, zero-padded to 3.
+
+   ```bash
+   # Genuine bus numbers are 3 digits FOLLOWED BY A HYPHEN. The `(?=-)` lookahead
+   # is load-bearing: without it, `^[0-9]{3}` reads "202" out of the YEAR in
+   # pre-numbering date-stem files (`2026-05-31-...`) and you allocate ~203 instead
+   # of the real next number — and once a bad `203-` file exists it becomes the new
+   # max and poisons every future allocation. Scan EVERY bus dir (specs + ledger +
+   # briefs, live + _archive) so a registered-but-unfiled number can't be reused and
+   # briefs and specs can't collide — they draw from one shared number space.
+   ls ~/.claude/spec-inbox ~/.claude/spec-inbox/_archive ~/.claude/ledger \
+      ~/.claude/brief-inbox ~/.claude/brief-inbox/_archive 2>/dev/null \
+      | grep -oP '^[0-9]{3}(?=-)' | sort -n | tail -1   # NNN = this + 1
+   ```
+
+   (Pre-2026-06-03 date-stem specs count as 0 — fresh numbering starts at `001`.)
+
+   **Sanity guard — refuse an absurd jump.** The genuine sequence is in the low
+   100s. If the command above returns ≥ 150, a mis-numbered or date-stem file has
+   poisoned the max — STOP, find it (`find ~/.claude -name '2[0-9][0-9]-*'`), fix
+   the offender, and re-run. Never blindly `+1` onto a number far above the live
+   sequence; a bad allocation becomes the new max and poisons every future one.
 
 2. **Place the spec atomically** into `~/.claude/spec-inbox/` as
    `NNN-<slug>-spec.md` — **hyphen before `spec`, never a dot** (the orc glob is

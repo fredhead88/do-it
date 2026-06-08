@@ -1,6 +1,6 @@
 # DO-IT — Pipeline Operating Protocol
 
-**Version:** 3.1.0 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
+**Version:** 3.2.2 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
 
 The single source of truth for how the spec pipeline works. Every role-skill
 (`think`, `spec-handover`, `orc`) reads this and obeys it — they do **not** restate its
@@ -67,6 +67,12 @@ dot before the type** (`-spec.md`, never `.spec.md`; the inbox glob is `*-spec.m
 so a dotted name is silently never seen). Allocate `NNN = max(live + _archive) + 1`,
 zero-padded to 3. Both lanes are numbered so "001 shipped, where's 003?" is a
 followable list. (Pre-2026-06-03 specs keep their date-stem ids — grandfathered.)
+Briefs and specs share **one** number space — scan every bus dir when allocating.
+When you read the max, match **3 digits followed by a hyphen** (`grep -oP
+'^[0-9]{3}(?=-)'`): the `(?=-)` is load-bearing — without it the regex reads "202"
+out of the year in a grandfathered `2026-...` date-stem file and allocates ~203,
+which then becomes the new max and poisons every future allocation. The
+`spec-handover` and `think` skills carry the exact command + a "refuse ≥150" guard.
 
 **Atomic drop:** write `<name>.tmp` in the target dir, then rename into place; on a
 name collision the loser retries `NNN+1`. Readers ignore `*.tmp`.

@@ -139,11 +139,25 @@ the later thinking). Two outcomes per topic:
 
 - **Handle it now** → flip into Brainstorm for that topic in this session.
 - **Park it for later** → write a **lightweight brief**
-  `~/.claude/brief-inbox/NNN-<slug>.brief.md` (allocate next `NNN`): just `topic:`,
-  `problem:` (one paragraph — who hurts and how; the seed of the spec's `intent:`), and
-  "develop later." No heavy schema, no approach. Then **park and point**: tell the user
-  "parked as brief NNN — open a fresh `/think` on it when you want." You never spawn a
-  session.
+  `~/.claude/brief-inbox/NNN-<slug>.brief.md`. **Allocate `NNN` from the SHARED bus
+  counter** (briefs and specs draw from one number space) — use the same exact
+  command as `spec-handover` step 1, never a hand-rolled grep:
+
+  ```bash
+  # `(?=-)` is load-bearing — without it `^[0-9]{3}` reads "202" out of the YEAR in
+  # date-stem files (2026-...) and you allocate ~203. Scan every bus dir so brief and
+  # spec numbers never collide.
+  ls ~/.claude/spec-inbox ~/.claude/spec-inbox/_archive ~/.claude/ledger \
+     ~/.claude/brief-inbox ~/.claude/brief-inbox/_archive 2>/dev/null \
+     | grep -oP '^[0-9]{3}(?=-)' | sort -n | tail -1   # NNN = this + 1
+  ```
+
+  If it returns ≥ 150, a mis-numbered file poisoned the max — STOP and fix it
+  (see spec-handover's sanity guard) before allocating. The brief carries just
+  `topic:`, `problem:` (one paragraph — who hurts and how; the seed of the spec's
+  `intent:`), and "develop later." No heavy schema, no approach. Then **park and
+  point**: tell the user "parked as brief NNN — open a fresh `/think` on it when you
+  want." You never spawn a session.
 
 **Dump account (the no-drop guarantee).** For a multi-item dump, end intake with a
 one-shot account — every source item lands in exactly one bucket:
