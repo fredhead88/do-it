@@ -203,6 +203,7 @@ OUTSTANDING_STATUSES = {
     "unknown",
 }
 STALE_MERGED_HOURS = 24
+AWAITING_PROD_FLOOR_HOURS = 48
 
 
 # --------------------------------------------------------------------------- IO
@@ -254,6 +255,14 @@ def _merged_at(rec: dict) -> datetime | None:
     """When did this record reach `merged`? Read from history, fall back to None."""
     for entry in reversed(rec.get("history") or []):
         if isinstance(entry, dict) and entry.get("status") == "merged":
+            return _parse_ts(entry.get("at"))
+    return None
+
+
+def _shipped_at(rec: dict) -> datetime | None:
+    """When did this record reach `shipped`? From history, else None."""
+    for entry in reversed(rec.get("history") or []):
+        if isinstance(entry, dict) and entry.get("status") == "shipped":
             return _parse_ts(entry.get("at"))
     return None
 
@@ -771,6 +780,33 @@ def cmd_verify(argv: list[str]) -> int:
     return 0
 
 
+def cmd_alert(argv: list[str]) -> int:
+    """Time-based ops alert (kept OUT of --check, which must stay deterministic).
+
+    Flags any spec that has been `awaiting-prod` longer than the floor — i.e.
+    shipped but the verifier has produced no verdict. Exit 1 if any are stale.
+    """
+    ap = argparse.ArgumentParser(prog="spec_ledger.py alert")
+    ap.add_argument("--floor-hours", type=int, default=AWAITING_PROD_FLOOR_HOURS)
+    a = ap.parse_args(argv)
+
+    verdicts = load_verdicts()
+    stale: list[tuple[str, float]] = []
+    for rec in load_records():
+        if effective_status(rec, verdicts.get(rec.get("spec_id"))) != "awaiting-prod":
+            continue
+        hrs = _hours_since(_shipped_at(rec))
+        if hrs is not None and hrs > a.floor_hours:
+            stale.append((rec.get("spec_id", "?"), hrs))
+
+    if not stale:
+        print("alert OK — no spec stuck awaiting-prod.")
+        return 0
+    for sid, hrs in stale:
+        print(f"STALE: {sid} — awaiting-prod for {round(hrs / 24, 1)}d (no verdict)")
+    return 1
+
+
 # -------------------------------------------------------- observable-criterion heuristic
 
 _PRESENCE_RE = re.compile(
@@ -811,6 +847,8 @@ def main() -> int:
         return cmd_set(argv[1:])
     if argv and argv[0] == "verify":
         return cmd_verify(argv[1:])
+    if argv and argv[0] == "alert":
+        return cmd_alert(argv[1:])
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--render", action="store_true", help="render (default)")

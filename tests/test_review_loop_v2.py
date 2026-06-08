@@ -201,3 +201,54 @@ def test_render_no_verdict_is_awaiting_prod(monkeypatch, tmp_path):
     body = sl.render(sl.load_records(), include_all=False)
     assert "Awaiting prod-verification (1)" in body
     assert "NEEDS-REWORK" not in body  # nothing rejected
+
+
+def test_alert_flags_stale_awaiting_prod(monkeypatch, tmp_path, capsys):
+    sl = _load(monkeypatch, tmp_path)
+    sl._write_record(
+        sl._record_path("100-x"),
+        {
+            "spec_id": "100-x",
+            "title": "Old ship",
+            "status": "shipped",
+            "history": [
+                {"at": "2020-01-01T00:00:00Z", "status": "shipped", "by": "orc"}
+            ],
+        },
+    )
+    rc = sl.cmd_alert([])
+    out = capsys.readouterr().out
+    assert rc == 1 and "100-x" in out and "awaiting-prod" in out
+
+
+def test_alert_silent_when_fresh(monkeypatch, tmp_path, capsys):
+    sl = _load(monkeypatch, tmp_path)
+    # Shipped just now -> well under the 48h floor.
+    sl._write_record(
+        sl._record_path("100-x"),
+        {
+            "spec_id": "100-x",
+            "title": "Fresh",
+            "status": "shipped",
+            "history": [{"at": sl._now_iso(), "status": "shipped", "by": "orc"}],
+        },
+    )
+    rc = sl.cmd_alert([])
+    assert rc == 0
+
+
+def test_check_is_time_invariant(monkeypatch, tmp_path):
+    # A spec stale for years must NOT make validate()/--check fail.
+    sl = _load(monkeypatch, tmp_path)
+    sl._write_record(
+        sl._record_path("100-x"),
+        {
+            "spec_id": "100-x",
+            "title": "Old",
+            "status": "shipped",
+            "history": [
+                {"at": "2020-01-01T00:00:00Z", "status": "shipped", "by": "orc"}
+            ],
+        },
+    )
+    assert sl.validate(sl.load_records()) == []
