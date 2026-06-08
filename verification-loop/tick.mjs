@@ -35,6 +35,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { loadConfig, runDir, ROOT } from './lib/config.mjs';
+import { criteriaFromCard, validateCriterion } from './lib/cardschema.mjs';
 import { selfcheck } from './lib/selfcheck.mjs';
 import { acquire } from './lib/auth.mjs';
 import { probe } from './lib/probe.mjs';
@@ -147,6 +148,7 @@ function loadShippedSpecs(filterIds = []) {
       const idM     = text.match(/^spec_id:\s*(.+)$/m);
       const fileM   = text.match(/^spec_file:\s*(.+)$/m);
       const shaM    = text.match(/^shipped_sha:\s*(.+)$/m);
+      const cardM   = text.match(/^review_card:\s*(.+)$/m);
       if (!statusM || !idM) continue;
       const status  = statusM[1].trim();
       if (!['shipped', 'accepted'].includes(status)) continue;
@@ -156,6 +158,7 @@ function loadShippedSpecs(filterIds = []) {
         spec_id,
         spec_file: fileM ? fileM[1].trim() : null,
         shipped_sha: shaM ? shaM[1].trim() : null,
+        review_card: cardM ? cardM[1].trim() : null,
         status,
       });
     } catch { /* skip */ }
@@ -167,7 +170,23 @@ function loadShippedSpecs(filterIds = []) {
  *  Looks for lines starting with "- Acceptance" or "## R" blocks.
  *  Returns array of { id, text, type }.
  */
-function loadCriteria(specFile, specId) {
+function loadCriteria(specFile, specId, reviewCard) {
+  // Prefer the machine-readable criteria block in the review card (authored by orc).
+  if (reviewCard) {
+    const cardPath = path.isAbsolute(reviewCard)
+      ? reviewCard
+      : path.join(process.env.HOME, '.claude', 'brief-inbox', reviewCard);
+    if (fs.existsSync(cardPath)) {
+      const { criteria, errors } = criteriaFromCard(fs.readFileSync(cardPath, 'utf8'));
+      if (criteria) {
+        if (errors.length) {
+          log(`  card schema errors for ${specId}: ${errors.join('; ')}`);
+        }
+        // Mark invalid criteria so the loop fails them closed rather than confirming.
+        return criteria.map((c) => ({ ...c, schema_error: validateCriterion(c) || null }));
+      }
+    }
+  }
   // specFile may be relative to repo root
   let filePath = specFile;
   if (specFile && !path.isAbsolute(specFile) && REPO_ROOT_CFG) {
@@ -522,7 +541,7 @@ async function tick() {
 
   // ── Per-spec, per-criterion loop ──────────────────────────────────────────────
   for (const spec of specs) {
-    const criteria = loadCriteria(spec.spec_file, spec.spec_id);
+    const criteria = loadCriteria(spec.spec_file, spec.spec_id, spec.review_card);
 
     const pinnedSha = spec.shipped_sha || currentSha;
     pinSpecSha(dir, spec.spec_id, pinnedSha, criteria.map(c => c.id));

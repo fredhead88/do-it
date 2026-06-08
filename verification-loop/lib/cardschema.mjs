@@ -26,3 +26,17 @@ export function validateCriterion(c) {
   }
   return null;
 }
+
+/** Parse a review card's criteria block and validate each. Returns
+ *  { criteria: [...] | null, errors: [...] }. `criteria` is null when the card has
+ *  no machine block (caller falls back to prose parsing). */
+export function criteriaFromCard(cardText) {
+  const criteria = extractCriteriaBlock(cardText);
+  if (!criteria) return { criteria: null, errors: [] };
+  const errors = [];
+  for (const c of criteria) {
+    const e = validateCriterion(c);
+    if (e) errors.push(e);
+  }
+  return { criteria, errors };
+}
