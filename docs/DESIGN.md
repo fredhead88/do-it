@@ -291,6 +291,25 @@ decision below.** Never silently. The system evolves the way you work.
   (they're deliberately grandfathered) or a numeric-range filter (more brittle
   than the one-character anchor). Allocators also scan every bus dir — briefs and
   specs share one number space — and refuse a max ≥150 as a poison tripwire.
+- **2026-06-08 (v3.3.0) — allocation is atomic via `next-num` under a bus-wide
+  lock; the reservation IS the artifact.** The pattern fix above cured the *misread*
+  but not the *race*: two sessions computing `max+1` inline both grabbed the same
+  number (110 was double-booked between two `think` sessions). The per-record
+  `flock` that `register`/`set` use can't help — allocators racing for a NEW number
+  have no shared record path to contend on. Fix: one machine-global lock
+  (`ledger/.alloc.lock`) held across scan → compute → reserve, exposed as
+  `spec_ledger.py next-num`. **Reserve-as-artifact, not a placeholder:** for specs
+  `next-num` births the real `registered` ledger record (it's just `register` with
+  an allocated id — same fields, same validation); for briefs it writes the brief
+  file. Chosen over a `reserved`-status stub + reaper (rejected: drags in a new
+  status, `validate`/`render`/`--check` changes, and an orphan-cleanup lifecycle —
+  whereas a born record / a parked brief are both already-valid resting states, so
+  there's nothing to reap). Consequence: spec handover allocates **and** registers
+  in one call (no separate `register` step), and the old "name-collision → retry
+  `NNN+1`" dance is gone because numbers are now handed out distinct. Sequencing
+  constraint: the helper must exist in the `spec_ledger.py` a skill invokes before
+  that skill is flipped to call it — the public repo ships them together; a separate
+  running instance lands/deploys the helper first.
 
 ## Rejected alternatives
 

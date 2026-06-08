@@ -22,52 +22,44 @@ either is missing, do **not** hand over — say why and send the user back to fi
 
 ## The action
 
-1. **Allocate the number — use this exact command, do NOT hand-roll a grep.**
-   `NNN = max(existing numbered bus items) + 1`, zero-padded to 3.
+1. **Allocate the number AND birth the record in one atomic command — never
+   hand-roll a grep, never compute `max+1` yourself.** `next-num` is the single
+   source of truth: under one machine-global lock it scans every bus dir with the
+   correct pattern (3 digits *followed by a hyphen* — so the year in a
+   grandfathered `2026-...` date-stem file can't read as 202), computes the next
+   number, **and births the `registered` ledger record before returning** — so a
+   concurrent `think`/handover session blocks until the reservation is on disk and
+   sees the next number, never the same one (this is what killed the 110
+   double-book). It refuses anything that wouldn't pass `--check`, and refuses an
+   absurd jump (≥150) telling you to hunt the poisoning file first.
 
    ```bash
-   # Genuine bus numbers are 3 digits FOLLOWED BY A HYPHEN. The `(?=-)` lookahead
-   # is load-bearing: without it, `^[0-9]{3}` reads "202" out of the YEAR in
-   # pre-numbering date-stem files (`2026-05-31-...`) and you allocate ~203 instead
-   # of the real next number — and once a bad `203-` file exists it becomes the new
-   # max and poisons every future allocation. Scan EVERY bus dir (specs + ledger +
-   # briefs, live + _archive) so a registered-but-unfiled number can't be reused and
-   # briefs and specs can't collide — they draw from one shared number space.
-   ls ~/.claude/spec-inbox ~/.claude/spec-inbox/_archive ~/.claude/ledger \
-      ~/.claude/brief-inbox ~/.claude/brief-inbox/_archive 2>/dev/null \
-      | grep -oP '^[0-9]{3}(?=-)' | sort -n | tail -1   # NNN = this + 1
-   ```
-
-   (Pre-2026-06-03 date-stem specs count as 0 — fresh numbering starts at `001`.)
-
-   **Sanity guard — refuse an absurd jump.** The genuine sequence is in the low
-   100s. If the command above returns ≥ 150, a mis-numbered or date-stem file has
-   poisoned the max — STOP, find it (`find ~/.claude -name '2[0-9][0-9]-*'`), fix
-   the offender, and re-run. Never blindly `+1` onto a number far above the live
-   sequence; a bad allocation becomes the new max and poisons every future one.
-
-2. **Place the spec atomically** into `~/.claude/spec-inbox/` as
-   `NNN-<slug>-spec.md` — **hyphen before `spec`, never a dot** (the orc glob is
-   `*-spec.md`). Write `…tmp` first, then rename; on a name collision retry `NNN+1`.
-
-3. **Write the ledger record — one command, never hand-edited YAML.** This writes
-   `~/.claude/ledger/NNN-<slug>.yml` born `registered`, atomically, and **refuses
-   anything that wouldn't pass `--check`** — so a malformed or incomplete record can't
-   be born (this is why we don't hand-write the YAML):
-
-   ```bash
-   python scripts/spec_ledger.py register NNN-<slug> \
+   # Prints ONLY the zero-padded number, e.g. 109. The ledger record is now born;
+   # do NOT also call `register` — next-num already did. Capture the number:
+   NNN=$(python scripts/spec_ledger.py next-num --kind spec --slug <slug> \
      --title "<first content line of the spec>" \
      --intent "<the spec's intent: line, verbatim>" \
-     --spec-file docs/do-it/specs/<spec-filename>.md  [--source-brief NNN]
+     --spec-file docs/do-it/specs/<spec-filename>.md  [--source-brief NNN]) \
+     || { echo "allocation refused — read the error, fix it, retry"; exit 1; }
    ```
 
-4. **Confirm both landed, or fail loudly.** A `registered NNN-<slug>` line means the
-   record landed; a non-zero exit + `error:` means it didn't. Also confirm the spec
-   file is in place (`test -s ~/.claude/spec-inbox/NNN-<slug>-spec.md`). If either is
-   missing, say which — never report a half-landed handover as done.
+   If it exits non-zero it printed the reason on stderr (poisoned max, missing
+   field, slug collision) — STOP and fix that; do not invent a number.
 
-5. **Confirm to the user, one line:** "Handed over as `NNN-<slug>` — it's
+2. **Place the spec file** into `~/.claude/spec-inbox/` as `${NNN}-<slug>-spec.md`
+   — **hyphen before `spec`, never a dot** (the orc glob is `*-spec.md`). Write
+   `…tmp` first, then rename. The number is already claimed by the ledger record
+   from step 1, so there is no collision to retry here — the file just gets named
+   after the number you were handed.
+
+3. **Confirm both landed, or fail loudly.** Step 1 exiting 0 with a number means
+   the record is born; re-confirm with `test -s ~/.claude/ledger/${NNN}-<slug>.yml`.
+   Also confirm the spec file is in place
+   (`test -s ~/.claude/spec-inbox/${NNN}-<slug>-spec.md`). If the record is present
+   but the file isn't, the handover half-landed — place the file (the number is
+   already yours); never report a half-landed handover as done.
+
+4. **Confirm to the user, one line:** "Handed over as `NNN-<slug>` — it's
    `registered` in the ledger; orc picks it up on its next boot/turn." No paste-block
    relay is needed: the ledger is live the instant this runs, and orc scans for new
    specs every turn (DO-IT.md §3). If the user *wants* to nudge orc now, they can —

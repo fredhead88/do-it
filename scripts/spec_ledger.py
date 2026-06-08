@@ -18,8 +18,19 @@ Usage:
     python scripts/spec_ledger.py --all      # include accepted/superseded in the printout
     python scripts/spec_ledger.py --check     # validate records; exit non-zero on any violation
 
+    # atomically allocate the next SHARED bus number (specs + briefs) AND reserve
+    # it under one machine-global lock, so concurrent sessions can't double-book.
+    # Prints only the zero-padded number. The reservation is the artifact itself:
+    #   spec  -> births the registered ledger record (do NOT also call `register`)
+    #   brief -> writes the brief file into brief-inbox (think fills its body)
+    python scripts/spec_ledger.py next-num --kind brief --slug my-topic
+    python scripts/spec_ledger.py next-num --kind spec  --slug my-topic \
+        --title T --intent I --spec-file docs/do-it/specs/x.md [--source-brief N]
+
     # write a record (so nobody hand-edits YAML — the source of indentation /
-    # missing-field bugs). Both refuse to write anything that wouldn't pass --check:
+    # missing-field bugs). Both refuse to write anything that wouldn't pass --check.
+    # `register` takes an explicit id; prefer `next-num --kind spec` at handover so
+    # allocation + birth happen atomically:
     python scripts/spec_ledger.py register NNN-slug --title T --intent I \
         --spec-file docs/do-it/specs/x.md [--source-brief N] [--by handover]
     python scripts/spec_ledger.py set NNN-slug <status> --by WHO \
@@ -52,6 +63,23 @@ _MIRROR_DIR = Path(
 )
 OUTSTANDING_MD = _MIRROR_DIR / "OUTSTANDING.md"
 
+# The other two bus lanes (machine-global, overridable for tests). The allocator
+# scans these alongside the ledger so spec and brief numbers draw from one space.
+SPEC_INBOX = Path(
+    os.environ.get("DOIT_SPEC_INBOX", Path.home() / ".claude" / "spec-inbox")
+)
+BRIEF_INBOX = Path(
+    os.environ.get("DOIT_BRIEF_INBOX", Path.home() / ".claude" / "brief-inbox")
+)
+
+# Genuine bus numbers are 3 digits FOLLOWED BY A HYPHEN. The trailing `-` is
+# load-bearing: without it the year in a grandfathered date-stem file
+# (`2026-05-31-...`) reads as "202" and poisons allocation. The sanity ceiling
+# trips when the computed next number leaves the genuine low-100s sequence —
+# the signature of a mis-numbered/date-stem file having inflated the max.
+_NUM_RE = re.compile(r"^([0-9]{3})-")
+ALLOC_SANITY_CEILING = 150
+
 
 # Verifier-owned namespace — the builder's glob("*.yml") never touches this subdir.
 # VERIFIED_DIR is derived from LEDGER_DIR so tests can override it via DOIT_LEDGER_DIR.
@@ -76,6 +104,51 @@ def _record_lock(path: Path):
     finally:
         fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         fh.close()
+
+
+@contextmanager
+def _bus_lock():
+    """ONE machine-global lock that serializes number *allocation* across both
+    lanes (specs + briefs). Distinct from `_record_lock`, which is per-record and
+    therefore cannot serialize allocation: two allocators racing for a NEW number
+    have no shared record path to contend on, so they'd both grab the same max+1.
+    Held across scan -> compute -> reserve so a concurrent caller blocks until the
+    reservation is on disk and visible to its scan."""
+    LEDGER_DIR.mkdir(parents=True, exist_ok=True)
+    lockfile = LEDGER_DIR / ".alloc.lock"
+    fh = open(lockfile, "w")  # noqa: WPS515
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        fh.close()
+
+
+def _bus_dirs() -> list[Path]:
+    """All five bus lanes the allocator scans (live + _archive of each inbox,
+    plus the ledger). Missing dirs are skipped."""
+    return [
+        SPEC_INBOX,
+        SPEC_INBOX / "_archive",
+        LEDGER_DIR,
+        BRIEF_INBOX,
+        BRIEF_INBOX / "_archive",
+    ]
+
+
+def scan_bus_max() -> int:
+    """Highest NNN across every bus dir, matching 3 digits FOLLOWED BY a hyphen
+    (so a `2026-...` year never reads as 202). Returns 0 on an empty bus."""
+    hi = 0
+    for d in _bus_dirs():
+        if not d.exists():
+            continue
+        for entry in d.iterdir():
+            m = _NUM_RE.match(entry.name)
+            if m:
+                hi = max(hi, int(m.group(1)))
+    return hi
 
 
 VALID_STATUS = {
@@ -341,6 +414,30 @@ def _write_record(path: Path, rec: dict) -> None:
     os.replace(tmp, path)
 
 
+def _registered_record(
+    spec_id: str, title: str, intent: str, spec_file: str, source_brief, by: str
+) -> dict:
+    """Build a born-`registered` ledger record. Shared by `register` (explicit id)
+    and `next-num` (allocated id) so both birth identical, valid records."""
+    now = _now_iso()
+    sb = source_brief
+    if sb is not None:
+        try:
+            sb = int(sb)
+        except ValueError:
+            pass
+    return {
+        "spec_id": spec_id,
+        "title": title,
+        "intent": intent,
+        "status": "registered",
+        "handed_over_at": now,
+        "spec_file": spec_file,
+        "source_brief": sb,
+        "history": [{"at": now, "status": "registered", "by": by}],
+    }
+
+
 def cmd_register(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="spec_ledger.py register")
     ap.add_argument("spec_id")
@@ -354,23 +451,9 @@ def cmd_register(argv: list[str]) -> int:
     path = _record_path(a.spec_id)
     if path.exists():
         return _die(f"{a.spec_id} already exists — use `set` to advance it")
-    now = _now_iso()
-    sb = a.source_brief
-    if sb is not None:
-        try:
-            sb = int(sb)
-        except ValueError:
-            pass
-    rec = {
-        "spec_id": a.spec_id,
-        "title": a.title,
-        "intent": a.intent,
-        "status": "registered",
-        "handed_over_at": now,
-        "spec_file": a.spec_file,
-        "source_brief": sb,
-        "history": [{"at": now, "status": "registered", "by": a.by}],
-    }
+    rec = _registered_record(
+        a.spec_id, a.title, a.intent, a.spec_file, a.source_brief, a.by
+    )
     errs = validate([rec])
     if errs:
         return _die("refusing to write — " + "; ".join(errs))
@@ -385,6 +468,90 @@ def cmd_register(argv: list[str]) -> int:
             rec = fresh
         _write_record(path, rec)
     print(f"registered {a.spec_id}")
+    return 0
+
+
+def _clean_slug(raw: str) -> str | None:
+    s = raw.strip().strip("-")
+    if not s or "/" in s or os.sep in s:
+        return None
+    return s
+
+
+def cmd_next_num(argv: list[str]) -> int:
+    """Atomically allocate the next shared bus number AND reserve it, under the
+    bus-wide lock, so concurrent sessions can't double-book (the 110 collision).
+
+    The reservation IS the artifact — no placeholder, no reaper:
+      * spec  -> births the real `registered` ledger record (same as `register`,
+                 but with an allocated id). Caller then places the spec file named
+                 after the printed number. Do NOT also call `register`.
+      * brief -> writes the brief file itself into brief-inbox (the persistent
+                 artifact that claims the number); the think session fills its body.
+
+    Prints the zero-padded 3-digit number on stdout, nothing else, on success.
+    """
+    ap = argparse.ArgumentParser(prog="spec_ledger.py next-num")
+    ap.add_argument("--kind", choices=["spec", "brief"], required=True)
+    ap.add_argument("--slug", required=True)
+    # Required for --kind spec (the record is born now, so it needs its fields):
+    ap.add_argument("--title")
+    ap.add_argument("--intent")
+    ap.add_argument("--spec-file", dest="spec_file")
+    ap.add_argument("--source-brief", dest="source_brief")
+    ap.add_argument("--by", default="handover")
+    a = ap.parse_args(argv)
+
+    slug = _clean_slug(a.slug)
+    if slug is None:
+        return _die(f"bad slug {a.slug!r}")
+    if a.kind == "spec":
+        missing = [f for f in ("title", "intent", "spec_file") if not getattr(a, f)]
+        if missing:
+            return _die(
+                "spec allocation needs --"
+                + ", --".join(m.replace("_", "-") for m in missing)
+                + " (the record is born now, so it must be complete)"
+            )
+
+    with _bus_lock():
+        hi = scan_bus_max()
+        nxt = hi + 1
+        if nxt >= ALLOC_SANITY_CEILING:
+            return _die(
+                f"computed next number {nxt} ≥ {ALLOC_SANITY_CEILING} — the genuine "
+                f"sequence is in the low 100s, so a mis-numbered or date-stem file "
+                f"has poisoned the max (current max {hi}). Hunt it before allocating:\n"
+                f"    find ~/.claude -name '2[0-9][0-9]-*'\n"
+                f"fix the offender, then re-run. Refusing to bake in a poisoned number."
+            )
+        nnn = f"{nxt:03d}"
+        spec_id = f"{nnn}-{slug}"
+
+        if a.kind == "spec":
+            path = _record_path(spec_id)
+            if path.exists():
+                return _die(f"{spec_id} already exists — pick a different slug")
+            rec = _registered_record(
+                spec_id, a.title, a.intent, a.spec_file, a.source_brief, a.by
+            )
+            errs = validate([rec])
+            if errs:
+                return _die("refusing to write — " + "; ".join(errs))
+            _write_record(path, rec)
+        else:  # brief
+            BRIEF_INBOX.mkdir(parents=True, exist_ok=True)
+            brief_path = BRIEF_INBOX / f"{spec_id}.brief.md"
+            if brief_path.exists():
+                return _die(f"{brief_path.name} already exists — pick a different slug")
+            tmp = brief_path.with_suffix(brief_path.suffix + ".tmp")
+            tmp.write_text(
+                f"---\ntopic: {slug}\nproblem:\nstatus: develop-later\n---\n\n"
+                "<!-- think fills topic + problem (one paragraph: who hurts and how) -->\n"
+            )
+            os.replace(tmp, brief_path)
+
+    print(nnn)
     return 0
 
 
@@ -550,6 +717,8 @@ def observable_warnings(records: list[dict]) -> list[str]:
 
 def main() -> int:
     argv = sys.argv[1:]
+    if argv and argv[0] == "next-num":
+        return cmd_next_num(argv[1:])
     if argv and argv[0] == "register":
         return cmd_register(argv[1:])
     if argv and argv[0] == "set":

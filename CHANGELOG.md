@@ -8,6 +8,40 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.3.0] — 2026-06-08
+
+Adds **atomic shared-bus number allocation** — closes the *race* that v3.2.2's
+pattern fix left open.
+
+### Added
+- `spec_ledger.py next-num --kind {spec,brief} --slug <slug>` — the single source
+  of truth for bus numbers. Under one machine-global lock (`ledger/.alloc.lock`) it
+  scans all five bus dirs with `^[0-9]{3}(?=-)`, computes the next number, **and
+  reserves it before returning**: a spec births its `registered` ledger record; a
+  brief writes its brief file. A concurrent session blocks until the reservation is
+  on disk, so two sessions can no longer both grab `max+1` and double-book (the live
+  110 collision between two `think` sessions). Refuses a computed number ≥150 as
+  poison, and (for specs) anything that wouldn't pass `--check`.
+- `DOIT_SPEC_INBOX` / `DOIT_BRIEF_INBOX` env overrides so the allocator's dir set is
+  testable in isolation (mirrors the existing `DOIT_LEDGER_DIR`). `tests/test_next_num.py`
+  covers the shared counter, date-stem immunity, the ≥150 guard, and real concurrency.
+
+### Changed
+- `spec-handover` and `think` now call `next-num` instead of an inline `grep`/`max+1`.
+  Spec handover allocates **and** registers in that one atomic call — it no longer
+  calls `register` separately. The existing `register` (explicit id) stays for any
+  caller that already knows its number.
+- **Sequencing note for instances:** `next-num` must exist in the `spec_ledger.py`
+  the skills shell out to *before* the skill docs are flipped to call it, or
+  allocation hard-fails. The public repo ships them together; a separate running
+  instance must land/deploy the helper first, then switch its skills.
+
+### Why
+The per-record `flock` register/set use cannot serialize *allocation* — two
+allocators racing for a new number have no shared record path to contend on. A
+bus-wide lock + reserve-on-return is the fix. The reservation is the artifact
+itself (no placeholder, no reaper). See `docs/DESIGN.md`.
+
 ## [3.2.2] — 2026-06-08
 
 ### Fixed

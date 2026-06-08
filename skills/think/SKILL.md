@@ -138,26 +138,26 @@ artifacts as noise). You **organize**; you do not brainstorm or recommend (that 
 the later thinking). Two outcomes per topic:
 
 - **Handle it now** → flip into Brainstorm for that topic in this session.
-- **Park it for later** → write a **lightweight brief**
-  `~/.claude/brief-inbox/NNN-<slug>.brief.md`. **Allocate `NNN` from the SHARED bus
-  counter** (briefs and specs draw from one number space) — use the same exact
-  command as `spec-handover` step 1, never a hand-rolled grep:
+- **Park it for later** → write a **lightweight brief**. **Allocate `NNN` from the
+  SHARED bus counter atomically** (briefs and specs draw from one number space) —
+  never hand-roll a grep or compute `max+1` yourself. `next-num` takes the
+  machine-global lock, scans every bus dir with the correct pattern (3 digits
+  *followed by a hyphen*, so a `2026-...` year never reads as 202), and **writes
+  the brief file itself** as the reservation — so a concurrent session blocks and
+  sees the next number, never the same one (this is what killed the 110
+  double-book):
 
   ```bash
-  # `(?=-)` is load-bearing — without it `^[0-9]{3}` reads "202" out of the YEAR in
-  # date-stem files (2026-...) and you allocate ~203. Scan every bus dir so brief and
-  # spec numbers never collide.
-  ls ~/.claude/spec-inbox ~/.claude/spec-inbox/_archive ~/.claude/ledger \
-     ~/.claude/brief-inbox ~/.claude/brief-inbox/_archive 2>/dev/null \
-     | grep -oP '^[0-9]{3}(?=-)' | sort -n | tail -1   # NNN = this + 1
+  # Prints ONLY the zero-padded number and creates
+  # ~/.claude/brief-inbox/${NNN}-<slug>.brief.md as a stub you then fill in.
+  NNN=$(python scripts/spec_ledger.py next-num --kind brief --slug <slug>) \
+    || { echo "allocation refused — read the stderr (poisoned max ≥150?), fix, retry"; exit 1; }
   ```
 
-  If it returns ≥ 150, a mis-numbered file poisoned the max — STOP and fix it
-  (see spec-handover's sanity guard) before allocating. The brief carries just
-  `topic:`, `problem:` (one paragraph — who hurts and how; the seed of the spec's
-  `intent:`), and "develop later." No heavy schema, no approach. Then **park and
-  point**: tell the user "parked as brief NNN — open a fresh `/think` on it when you
-  want." You never spawn a session.
+  Then fill the created stub: `topic:`, `problem:` (one paragraph — who hurts and
+  how; the seed of the spec's `intent:`), and leave `status: develop-later`. No
+  heavy schema, no approach. Then **park and point**: tell the user "parked as
+  brief NNN — open a fresh `/think` on it when you want." You never spawn a session.
 
 **Dump account (the no-drop guarantee).** For a multi-item dump, end intake with a
 one-shot account — every source item lands in exactly one bucket:

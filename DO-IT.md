@@ -1,6 +1,6 @@
 # DO-IT — Pipeline Operating Protocol
 
-**Version:** 3.2.2 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
+**Version:** 3.3.0 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
 
 The single source of truth for how the spec pipeline works. Every role-skill
 (`think`, `spec-handover`, `orc`) reads this and obeys it — they do **not** restate its
@@ -64,18 +64,26 @@ Two lanes (by audience) + the ledger. State **is** file location — no manifest
 
 **Naming — one rule, no exceptions:** `NNN-<slug>` — numbered, hyphens, **never a
 dot before the type** (`-spec.md`, never `.spec.md`; the inbox glob is `*-spec.md`,
-so a dotted name is silently never seen). Allocate `NNN = max(live + _archive) + 1`,
-zero-padded to 3. Both lanes are numbered so "001 shipped, where's 003?" is a
-followable list. (Pre-2026-06-03 specs keep their date-stem ids — grandfathered.)
-Briefs and specs share **one** number space — scan every bus dir when allocating.
-When you read the max, match **3 digits followed by a hyphen** (`grep -oP
-'^[0-9]{3}(?=-)'`): the `(?=-)` is load-bearing — without it the regex reads "202"
-out of the year in a grandfathered `2026-...` date-stem file and allocates ~203,
-which then becomes the new max and poisons every future allocation. The
-`spec-handover` and `think` skills carry the exact command + a "refuse ≥150" guard.
+so a dotted name is silently never seen). Both lanes are numbered so "001 shipped,
+where's 003?" is a followable list. (Pre-2026-06-03 specs keep their date-stem ids
+— grandfathered.)
 
-**Atomic drop:** write `<name>.tmp` in the target dir, then rename into place; on a
-name collision the loser retries `NNN+1`. Readers ignore `*.tmp`.
+**Allocate with `spec_ledger.py next-num` — the single source of truth, never a
+hand-rolled grep.** Briefs and specs share **one** number space. `next-num` takes a
+machine-global lock, scans every bus dir matching **3 digits followed by a hyphen**
+(`^[0-9]{3}(?=-)` — the `(?=-)` is load-bearing: without it the year in a
+grandfathered `2026-...` file reads as "202" and allocates ~203, which then becomes
+the new max and poisons every future allocation), and **reserves the number as it
+returns it** — births the `registered` ledger record (spec) or writes the brief
+file (brief). Two consequences this fixes: (1) the *misread* — date-stems can't
+inflate the max, and a computed number ≥150 is refused as poison; (2) the *race* —
+two sessions can no longer both compute `max+1` and double-book (the 110 collision),
+because the first reservation is on disk before the lock releases. A per-record lock
+can't do this; allocation needs the one bus-wide lock `next-num` holds.
+
+**Atomic drop (non-allocating writes):** write `<name>.tmp` in the target dir, then
+rename into place. Readers ignore `*.tmp`. (Allocation itself no longer races, so the
+old "loser retries `NNN+1`" dance is gone — `next-num` hands out distinct numbers.)
 
 **The review card mirrors the spec (the close-out contract).** A card carries **one
 `components:` row per spec acceptance-criterion — no omissions** (done + how verified,
