@@ -177,8 +177,8 @@ def test_render_rejected_goes_to_top_needs_rework(monkeypatch, tmp_path):
     )
     body = sl.render(sl.load_records(), include_all=False)
     assert "NEEDS-REWORK" in body
-    top = body.split("NEEDS-REWORK")[1].split("##")[0]
-    assert "100-x" in top  # listed under the NEEDS-REWORK section
+    # 100-x must appear after (i.e. under) the NEEDS-REWORK heading
+    assert body.index("NEEDS-REWORK") < body.index("100-x")
 
 
 def test_render_confirmed_is_accepted_not_awaiting(monkeypatch, tmp_path):
@@ -252,3 +252,94 @@ def test_check_is_time_invariant(monkeypatch, tmp_path):
         },
     )
     assert sl.validate(sl.load_records()) == []
+
+
+# ---------------------------------------------------------------------------
+# Item 1: cmd_verify must not write verdict: null when criteria are incomplete
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_verify_incomplete_writes_no_verdict(monkeypatch, tmp_path, capsys):
+    sl = _load(monkeypatch, tmp_path)
+    # Register a shipped record so effective_status can be called on it
+    _ship(sl, "100-x", "Incomplete spec")
+    rc = sl.cmd_verify(
+        ["100-x", "--judge", "c", "--evidence", "e", "--criterion", "c1=not-run"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "incomplete" in out.lower()
+    rec = yaml.safe_load(sl._verified_path("100-x").read_text())
+    # verdict key must be absent (not null)
+    assert "verdict" not in rec
+    # a shipped record with no verdict is awaiting-prod
+    build_rec = yaml.safe_load(sl._record_path("100-x").read_text())
+    assert sl.effective_status(build_rec, rec) == "awaiting-prod"
+
+
+# ---------------------------------------------------------------------------
+# Item 2: needs_human trumps CONFIRMED but not REJECTED
+# ---------------------------------------------------------------------------
+
+
+def test_effective_status_needs_human_trumps_confirmed(monkeypatch, tmp_path):
+    sl = _load(monkeypatch, tmp_path)
+    assert (
+        sl.effective_status(
+            {"status": "shipped"}, {"verdict": "CONFIRMED", "needs_human": "taste"}
+        )
+        == "needs-human"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Item 3: a REJECTED record must not also appear in the needs_human section
+# ---------------------------------------------------------------------------
+
+
+def test_render_rejected_not_double_listed(monkeypatch, tmp_path):
+    sl = _load(monkeypatch, tmp_path)
+    # Ship a record that has both needs_human set AND a REJECTED verdict
+    sl._write_record(
+        sl._record_path("100-x"),
+        {
+            "spec_id": "100-x",
+            "title": "Double trouble",
+            "status": "shipped",
+            "needs_human": True,
+            "history": [
+                {"at": "2026-06-08T00:00:00Z", "status": "shipped", "by": "orc"}
+            ],
+        },
+    )
+    sl._write_verdict(
+        sl._verified_path("100-x"),
+        {"spec_id": "100-x", "verdict": "REJECTED", "judge": "codex"},
+    )
+    body = sl.render(sl.load_records(), include_all=False)
+    # Must appear under NEEDS-REWORK (definitive rejection wins)
+    assert "NEEDS-REWORK" in body
+    assert body.index("NEEDS-REWORK") < body.index("100-x")
+    # Must appear exactly once in the body (not also in could-not-classify)
+    assert body.count("100-x") == 1
+
+
+# ---------------------------------------------------------------------------
+# Item 5: _shipped_at returns the LATEST shipped entry, not the first
+# ---------------------------------------------------------------------------
+
+
+def test_shipped_at_uses_latest_shipped(monkeypatch, tmp_path):
+    sl = _load(monkeypatch, tmp_path)
+    rec = {
+        "spec_id": "100-x",
+        "status": "shipped",
+        "history": [
+            {"at": "2026-01-01T00:00:00Z", "status": "shipped", "by": "orc"},
+            {"at": "2026-03-01T00:00:00Z", "status": "rework", "by": "orc"},
+            {"at": "2026-06-01T00:00:00Z", "status": "shipped", "by": "orc"},
+        ],
+    }
+    ts = sl._shipped_at(rec)
+    assert ts is not None
+    assert ts.year == 2026 and ts.month == 6 and ts.day == 1

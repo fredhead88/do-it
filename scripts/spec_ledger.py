@@ -182,7 +182,7 @@ VALID_STATUS = {
     "building",
     "merged",
     "shipped",
-    "accepted",
+    "accepted",  # legacy only — blocked by cmd_set; effective_status derives it from shipped ∧ CONFIRMED
     "held",
     "bounced",
     "rework",
@@ -280,17 +280,20 @@ def effective_status(rec: dict, verdict: dict | None) -> str:
     so the build ledger and the verifier verdict can never disagree. Pre-shipped
     records (and legacy records already stored as `accepted`) return their own
     stored status unchanged.
+
+    Precedence for shipped records: REJECTED → needs_human → CONFIRMED → awaiting-prod.
+    An open needs_human beats CONFIRMED but not REJECTED (a definitive rejection wins).
     """
     status = rec.get("status")
     if status != "shipped":
         return status  # pre-shipped lifecycle, and legacy stored `accepted`
     v = (verdict or {}).get("verdict")
-    if v == "CONFIRMED":
-        return "accepted"
     if v == "REJECTED":
         return "needs-rework"
     if (verdict or {}).get("needs_human"):
         return "needs-human"
+    if v == "CONFIRMED":
+        return "accepted"
     return "awaiting-prod"
 
 
@@ -339,9 +342,12 @@ def render(records: list[dict], include_all: bool) -> str:
     needs_human = [
         r
         for r in records
-        if r.get("needs_human")
-        or r.get("status") == "unknown"
-        or _eff(r) == "needs-human"
+        if (
+            r.get("needs_human")
+            or r.get("status") == "unknown"
+            or _eff(r) == "needs-human"
+        )
+        and _eff(r) != "needs-rework"
     ]
     needs_rework = [r for r in records if _eff(r) == "needs-rework"]
     outstanding = [
@@ -738,16 +744,21 @@ def cmd_verify(argv: list[str]) -> int:
     rec = _load_yaml(path) if path.exists() else {"spec_id": a.spec_id, "history": []}
 
     if a.criterion:
-        crit = rec.setdefault("criteria", {})
+        # Pass 1: validate all entries WITHOUT mutating crit (so a bad entry
+        # never partially applies its predecessors).
         for kv in a.criterion:
             if "=" not in kv:
                 return _die(f"--criterion must be ID=VERDICT, got {kv!r}")
-            k, v = kv.split("=", 1)
-            if v not in VALID_CRITERION_VERDICT:
+            _k, _v = kv.split("=", 1)
+            if _v not in VALID_CRITERION_VERDICT:
                 return _die(
-                    f"invalid criterion verdict {v!r} for {k!r} "
+                    f"invalid criterion verdict {_v!r} for {_k!r} "
                     f"(one of {sorted(VALID_CRITERION_VERDICT)})"
                 )
+        # Pass 2: all entries are valid — apply them.
+        crit = rec.setdefault("criteria", {})
+        for kv in a.criterion:
+            k, v = kv.split("=", 1)
             crit[k] = v
         spec_verdict = resolve_spec_verdict(crit)
         # The verifier may pass a spec-level verdict only if it agrees with the
@@ -767,16 +778,28 @@ def cmd_verify(argv: list[str]) -> int:
             )
         spec_verdict = a.verdict
 
-    rec["verdict"] = spec_verdict
+    # Item 1: do not write `verdict: null` when criteria are present but incomplete.
+    if spec_verdict is None:
+        rec.pop("verdict", None)  # clear any stale value from a prior run
+    else:
+        rec["verdict"] = spec_verdict
     rec["judge"] = a.judge
     rec["evidence_ref"] = a.evidence
     rec["at"] = now
+    # history records the derived value; None means incomplete at this point in time
     rec.setdefault("history", []).append(
-        {"at": now, "verdict": spec_verdict, "judge": a.judge}
+        {
+            "at": now,
+            "verdict": spec_verdict if spec_verdict is not None else "incomplete",
+            "judge": a.judge,
+        }
     )
     with _record_lock(path):  # advisory flock — same as register/set
         _write_verdict(path, rec)
-    print(f"{a.spec_id} verified -> {spec_verdict}")
+    if spec_verdict is None:
+        print(f"{a.spec_id} criteria updated (no verdict yet — incomplete)")
+    else:
+        print(f"{a.spec_id} verified -> {spec_verdict}")
     return 0
 
 
