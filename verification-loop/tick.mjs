@@ -37,6 +37,7 @@ import { parseArgs } from 'node:util';
 import { loadConfig, runDir, ROOT } from './lib/config.mjs';
 import { criteriaFromCard, validateCriterion } from './lib/cardschema.mjs';
 import { runDomAssertion } from './lib/assert-dom.mjs';
+import { tooFreshToVerify } from './lib/freshness.mjs';
 import { selfcheck } from './lib/selfcheck.mjs';
 import { acquire } from './lib/auth.mjs';
 import { probe } from './lib/probe.mjs';
@@ -150,6 +151,7 @@ function loadShippedSpecs(filterIds = []) {
       const fileM   = text.match(/^spec_file:\s*(.+)$/m);
       const shaM    = text.match(/^shipped_sha:\s*(.+)$/m);
       const cardM   = text.match(/^review_card:\s*(.+)$/m);
+      const shipAtM = text.match(/^\s*-\s*at:\s*'?([^'\n]+)'?\n\s*status:\s*shipped/m);
       if (!statusM || !idM) continue;
       const status  = statusM[1].trim();
       if (!['shipped', 'accepted'].includes(status)) continue;
@@ -160,6 +162,7 @@ function loadShippedSpecs(filterIds = []) {
         spec_file: fileM ? fileM[1].trim() : null,
         shipped_sha: shaM ? shaM[1].trim() : null,
         review_card: cardM ? cardM[1].trim() : null,
+        shipped_at: shipAtM ? shipAtM[1].trim() : null,
         status,
       });
     } catch { /* skip */ }
@@ -571,6 +574,11 @@ async function tick() {
 
   // ── Per-spec, per-criterion loop ──────────────────────────────────────────────
   for (const spec of specs) {
+    if (tooFreshToVerify(spec.shipped_at, 10)) {
+      log(`  skip ${spec.spec_id} — shipped <10min ago, letting the deploy go live`);
+      continue;
+    }
+
     const criteria = loadCriteria(spec.spec_file, spec.spec_id, spec.review_card);
 
     const pinnedSha = spec.shipped_sha || currentSha;
