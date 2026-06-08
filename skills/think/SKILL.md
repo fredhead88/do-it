@@ -1,6 +1,6 @@
 ---
 name: think
-description: "Boot a session into the THINKER role for your repo. Use when the user says 'think', '/think', 'thinker session', 'let's spec something out', 'brainstorm X', 'triage these ideas', 'sort this dump', 'collect some bugs', or 'process the done work' — any session whose job is discovery, intake, capture, or review that ends in a spec (or a closed review), not code. A thinker is READ-ONLY on code: never edits files, never touches git. It has four shapes (brainstorm / review / intake-triage / collect) and performs its own handoffs (hand a spec to the orchestrator, send a memo). Stage 2 of the DO-IT pipeline. Invoke at the START of a thinking session."
+description: "Boot a session into the THINKER role for your repo. Use when the user says 'think', '/think', 'thinker session', 'let's spec something out', 'brainstorm X', 'triage these ideas', 'sort this dump', or 'collect some bugs' — any session whose job is discovery, intake, or capture that ends in a spec, not code. A thinker is READ-ONLY on code: never edits files, never touches git. It has three shapes (brainstorm / intake-triage / collect) and performs its own handoffs (hand a spec to the orchestrator, send a memo). Stage 2 of the DO-IT pipeline. Invoke at the START of a thinking session."
 ---
 
 # Think — Thinker Session
@@ -50,7 +50,6 @@ to implement: stop, say this is a thinker session, offer to spec it instead.
    unfinished work (corrective spec / back to orc), not something you quietly accept.
 3. **Offer the menu** and let the user choose:
    - **Brainstorm** — something new, or develop a waiting brief.
-   - **Review** — walk orc's review cards (process done work).
    - **Intake/triage** — sort a raw dump into topics (the old planner, now a shape).
    - **Collect** — capture many small items, synthesize one spec at the end.
 4. **Confirm in one line** before diverging.
@@ -78,58 +77,11 @@ Discovery, research, probing, converging on one approach.
 
 Output: an orchestrator-ready spec (see *The spec*), then hand it over.
 
-## Shape B — Review (process done work)
+## Shape B — (removed; review now lives in `rev`)
 
-NOT brainstorming — you're the human's hands checking whether something orc shipped
-matches what they pictured. The review card is orc's message; this closes the loop
-without resuming a dead session.
-
-**Human last, not first.** You front-load two machine gates so the human arrives at a
-card where nothing's been lost and everything mechanical is already green — they spend
-their time only on what a machine genuinely can't judge. Pull the **archived spec**
-(`~/.claude/spec-inbox/_archive/<spec_id>-spec.md`) alongside the card; you reconcile
-one against the other.
-
-For each `~/.claude/brief-inbox/*.review.md` (oldest first, or the user's pick):
-
-**Gate 1 — Reconcile (nothing lost spec→card).** Orc already blind-audited the card
-against the spec in-session, so completeness is the normal case — this is your
-independent confirmation. Diff the spec's acceptance criteria against the card's
-`components:` rows (one row per criterion — DO-IT.md §2). A criterion with **no
-matching row** = un-walkable card; don't take it to the human — send it back to orc as
-`rework` (= thinker→orc, distinct from `bounced` = orc→human; orc looks for it first on
-boot), card left live:
-```bash
-python scripts/spec_ledger.py set <spec_id> rework --by think-review \
-  --reason "card omits spec criteria: [list]"
-```
-
-**Gate 2 — Re-verify independently.** Orc put a `check:` on each row; confirm it from
-your read-only seat — curl the route, grep the file, load the preview URL (a
-`model="sonnet"` sub-agent for anything heavy). Mark each **confirmed**,
-**contradicts**, or **needs-human** (`eyeball: yes`, or genuinely unmachineable). Never
-touch code. Any **contradicts** → `rework` back to orc, same command as Gate 1.
-
-**Then the human (the residual only).** A compressed verdict, not the raw card: "N
-criteria present · M confirmed green · K need your eyes: [questions] · P that orc
-marked **not-done** — accept or correct?" The human handles `needs-human`, rules on
-each `not-done`, spot-checks the green. Weak descopes were already sent back in-session
-(DO-IT.md §2), so `not-done` should be small and legitimate (out-of-scope / loud
-blocker / fork); a "deferred / wasn't sure" reason that slipped through is unfinished
-work → corrective spec, not a descope.
-
-**Resolve — ledger writes go through the helper, never hand-edited YAML** (writing the
-bus isn't touching code, so the hard rule holds):
-- **Happy** → `spec_ledger.py set <spec_id> accepted --by think-review`, then `mv` the
-  card to `~/.claude/brief-inbox/_archive/`. Done.
-- **Unhappy** (built wrong, or a rejected `not-done`) → write a **corrective spec**
-  (`intent:` "the <feature> ship missed X; correct it so Y", testable criteria), hand
-  it over, mark the original superseded by it — `set <spec_id> superseded --by
-  think-review --superseded-by <new_id>` (the helper *requires* `--superseded-by`, so
-  lineage can't be lost) — and archive the card.
-
-A card never carries requirements and you never edit it: an unhappy walk produces a
-*spec*; an incomplete/contradicted card produces a *rework*; neither is a human review.
+Reviewing shipped work is the `rev` session's job (it drives the verifier and writes
+verdicts). A thinker that notices a defect files it as a new spec via the normal
+intake/brainstorm shapes — it does not walk review cards.
 
 ## Shape C — Intake / triage (sort a dump; this absorbs the old planner)
 
