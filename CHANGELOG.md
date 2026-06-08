@@ -8,6 +8,37 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.4.0] — 2026-06-08
+
+**Review Loop v2 — Part 1 of 3: the derived-verdict ledger substrate.** First
+slice of the rendered-page-verdict redesign
+(`docs/2026-06-08-review-loop-prod-verdict-design.md`). Closure becomes
+*computed* from the join of the build ledger and the verifier's per-criterion
+verdicts, so "build says done / prod says hollow" is un-representable. Parts 2
+(the executable Playwright assertion engine + the A1 live proof) and 3 (ops crons
++ the standing `rev` review session + `rev-watch/`) follow as later minors.
+
+### Added
+- `resolve_spec_verdict()` — aggregates a per-criterion verdict map into a
+  spec-level verdict (REJECTED dominates; CONFIRMED iff every observable criterion
+  passes; `not-applicable` excluded so one data-gap can't freeze a spec forever).
+- `effective_status()` — derives closure: `shipped ∧ CONFIRMED → accepted`,
+  `shipped ∧ REJECTED → needs-rework`, open `needs_human` → `needs-human`, else
+  `awaiting-prod`. `accepted` is now **computed, never stored**.
+- `spec_ledger.py alert` — flags any spec stuck `awaiting-prod` > 48h. Kept OUT of
+  `--check`, which stays time-invariant for CI.
+- `render` gains a loud top **`❌ NEEDS-REWORK`** section and an `awaiting-prod`
+  bucket.
+
+### Changed (behavioural — note before upgrading an instance)
+- `cmd_verify` derives the spec-level verdict from `--criterion ID=VERDICT` and
+  **refuses a caller-supplied verdict that disagrees** with the derived one. The
+  legacy positional-verdict path still works.
+- `cmd_set accepted` is now **refused** — `accepted` is computed-only. (`accepted`
+  stays in `VALID_STATUS` so legacy records still validate.)
+- `render`'s "Shipped — awaiting your review" bucket is renamed
+  "Awaiting prod-verification"; a CONFIRMED spec is promoted to Accepted.
+
 ## [3.3.0] — 2026-06-08
 
 Adds **atomic shared-bus number allocation** — closes the *race* that v3.2.2's
