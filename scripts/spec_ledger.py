@@ -264,6 +264,27 @@ def _hours_since(dt: datetime | None) -> float | None:
     return (datetime.now(timezone.utc) - dt).total_seconds() / 3600.0
 
 
+def effective_status(rec: dict, verdict: dict | None) -> str:
+    """The closure status, COMPUTED from the build record + the verifier verdict.
+
+    `accepted` is never stored — it is derived here from `shipped ∧ CONFIRMED`,
+    so the build ledger and the verifier verdict can never disagree. Pre-shipped
+    records (and legacy records already stored as `accepted`) return their own
+    stored status unchanged.
+    """
+    status = rec.get("status")
+    if status != "shipped":
+        return status  # pre-shipped lifecycle, and legacy stored `accepted`
+    v = (verdict or {}).get("verdict")
+    if v == "CONFIRMED":
+        return "accepted"
+    if v == "REJECTED":
+        return "needs-rework"
+    if (verdict or {}).get("needs_human"):
+        return "needs-human"
+    return "awaiting-prod"
+
+
 # --------------------------------------------------------------------- validate
 
 

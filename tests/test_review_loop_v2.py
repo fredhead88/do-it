@@ -35,3 +35,28 @@ def test_resolve_spec_verdict(monkeypatch, tmp_path):
     assert sl.resolve_spec_verdict({"c1": "CONFIRMED", "c2": "not-run"}) is None
     # a single REJECTED dominates everything
     assert sl.resolve_spec_verdict({"c1": "not-run", "c2": "REJECTED"}) == "REJECTED"
+
+
+def test_effective_status(monkeypatch, tmp_path):
+    sl = _load(monkeypatch, tmp_path)
+    # pre-shipped lifecycle is unchanged
+    assert sl.effective_status({"status": "building"}, None) == "building"
+    # shipped + no verdict -> awaiting-prod
+    assert sl.effective_status({"status": "shipped"}, None) == "awaiting-prod"
+    # shipped + CONFIRMED -> accepted (derived, never stored)
+    assert (
+        sl.effective_status({"status": "shipped"}, {"verdict": "CONFIRMED"})
+        == "accepted"
+    )
+    # shipped + REJECTED -> needs-rework
+    assert (
+        sl.effective_status({"status": "shipped"}, {"verdict": "REJECTED"})
+        == "needs-rework"
+    )
+    # shipped + open needs_human (no verdict) -> needs-human
+    assert (
+        sl.effective_status({"status": "shipped"}, {"needs_human": "taste"})
+        == "needs-human"
+    )
+    # legacy records already stored as accepted still read as accepted
+    assert sl.effective_status({"status": "accepted"}, None) == "accepted"
