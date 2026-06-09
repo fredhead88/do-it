@@ -1,9 +1,9 @@
 # DO-IT — Pipeline Operating Protocol
 
-**Version:** 3.6.0 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
+**Version:** 3.7.0 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
 
 The single source of truth for how the spec pipeline works. Every role-skill
-(`think`, `spec-handover`, `orc`) reads this and obeys it — they do **not** restate its
+(`think`, `spec-handover`, `orc`, `rev`, `watcher`) reads this and obeys it — they do **not** restate its
 rules. This is the *what* (always current); the *why* + decision log is `DESIGN.md`.
 When you change the pipeline, follow §7.
 
@@ -52,6 +52,12 @@ dump ─▶ think ─spec─▶ handover ─▶ spec-inbox + ledger ─▶ orc �
   rendered-page evidence, writes per-criterion verdicts to the verifier namespace,
   files correctives. Read-only on code; never commits; never authors specs. Self-relays
   on its own `ROLE=rev` watcher.
+- **watcher** — the standing process reviewer (rev's twin, one level up). rev reviews
+  the shipped *product*; the watcher reviews the *loop* — whether the build/review
+  machine is itself producing defects, churn, or invisible work — and proposes
+  systemic guards via a `/think` handover. Read-only on code/git/bus; never registers
+  an NNN (076); evidence-bound; one-proposal-per-session quota. Self-relays on its own
+  `ROLE=watcher`.
 
 ## 2. The message bus
 

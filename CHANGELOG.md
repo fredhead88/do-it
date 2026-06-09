@@ -8,6 +8,54 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.7.0] — 2026-06-09
+
+**Loop self-repair — the `watcher` role, a relay-deadlock fix, and predictive
+gates.** Born out of a full night of watching the orc↔rev↔think loop run live;
+the design doc records the dated incidents behind each change:
+`docs/2026-06-09-loop-self-repair-v3.7.md`.
+
+### Added
+- **`watcher`** — a standing process-reviewer skill (`skills/watcher/SKILL.md`),
+  rev's twin one level up: rev reviews the shipped *product*, the watcher reviews
+  the *loop* (is the build/review machine itself producing defects, churn, or
+  invisible work?). Read-only on code/git/bus, never registers an NNN, evidence-
+  bound (every proposal cites dated incidents), biased to leave-it-alone, and
+  capped by a hard one-proposal-per-session / three-open quota so it can't churn
+  the rules. Self-relays on its own baton like orc/rev. `setup.sh` links it.
+- **Reference close-out gates** (`scripts/close-out-gates/`): orphan-nav
+  reachability (a page built but unreachable — recurred 4×), cross-spec
+  data-dependency derivation (a data spec ships while a downstream surface goes
+  stale), and a deploy manifest (one written record of prod ground-truth so the
+  reviewer reads it instead of re-probing host/sha each tick). Project-shaped —
+  all paths env-overridable, no hardcoded hosts.
+- **F5 contract binding** in `spec_ledger.py`: `verify --contract-version` stamps
+  the contract a `$`-asserting verdict held under; bumping the contract flips that
+  verdict to a new **needs-revalidation** state (re-verify under the new contract)
+  instead of a false regression. Absent contract file ⇒ inert (backward compatible).
+
+### Fixed
+- **Relay deadlock (the night's worst find).** The relay sentinel was dropped only
+  at the hard token threshold, so an agent that handed off *below* it — a deliberate
+  early handoff, or after a soft nudge — left no sentinel; the cron never read its
+  `HANDED-OFF` baton and the session sat wedged forever. Observed live on **both**
+  twins at once (orc @371k, rev @384k, neither relayed). Fix: a configurable soft
+  line (`ORC_WATCH_SOFT`, default 0.9× threshold) **arms the sentinel at the soft
+  line**, so any handoff at or above it relays; the hard line only escalates the
+  nudge. (Residual, documented: a deliberate handoff *below* the soft line still
+  needs a manual restart — the full baton-scan trigger is noted for a follow-up.)
+- **Relay F11/F12.** The gate matched `head -1 … status: HANDED-OFF`, but the `rev`
+  baton's status is on line 3 (H1 title on line 1) — so a `rev` self-relay could
+  *never* fire. Now scans the baton head. Plus a freshness gate (refuse a baton
+  older than `BATON_FRESH_SECS`, default 90m), atomic-completeness, a consume-once
+  marker (no double-`/clear`), and a newest-sentinel-per-pane identity guard.
+
+### Changed
+- **076 role guard** is now enforced in `spec_ledger.py`: `next-num`/`register`/`set`
+  are refused for `ROLE` in `{rev, watcher}` — only `orc` writes the build ledger.
+  A guard, not a convention (a non-builder writing the ledger once shipped an outage).
+- Role map is now **orc / rev / think / watcher**.
+
 ## [3.6.0] — 2026-06-08
 
 **Review Loop v2 — Part 3 of 3 (complete): ops + the standing `rev` session.**

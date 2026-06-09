@@ -166,7 +166,19 @@ Then run: `node tick.mjs --config <your-project> --dry-run --force`
 Full setup instructions: [`verification-loop/SETUP.md`](verification-loop/SETUP.md).
 Config field reference: [`verification-loop/config/README.md`](verification-loop/config/README.md).
 
-## Relay-watch (v3.2): the orc never stops
+## Watching the loop itself (v3.7)
+
+`rev` reviews the shipped *product*. The **`watcher`** reviews the *loop*: is the
+build/review machine itself producing defects, churn, or invisible work? It's rev's
+twin one level up — the only role that looks *across* runs rather than within one, so
+it's the only one that can see a class of bug recurring or a process drifting. It reads
+the ledger history, the relay logs, and a ranked fatal-mistakes registry, and — rarely,
+and only with dated evidence — proposes a systemic guard via a `/think` handover. It is
+read-only on everything, never registers a spec, and is capped by a hard quota so it
+can't churn the rules. A `watcher` session that concludes "loop healthy, no proposal" is
+a success, not an idle one. Say **`watcher`** to boot one.
+
+## Relay-watch (v3.2, hardened v3.7): the orc never stops
 
 An orchestrator session eventually fills its context window, and the manual fix
 — tell it to hand over the baton, `/clear`, type `/orc` — made *you* the cron
@@ -181,6 +193,14 @@ Scoped hard: the hook acts only in the pane the orc skill registers at boot,
 so thinker sessions and unrelated projects are never touched. One cron line
 serves all your DO-IT repos. Setup (a hook entry + a cron line):
 [`relay-watch/SETUP.md`](relay-watch/SETUP.md).
+
+v3.7 hardened the trigger after a live deadlock: the sentinel is now armed at a
+**soft line** (`ORC_WATCH_SOFT`, default 0.9× threshold), not only the hard
+ceiling — so an agent that hands off *early* (a deliberate handoff, or after the
+soft nudge) still relays instead of sitting wedged waiting for a hard-threshold
+signal that never comes. The cron gate also scans the baton head (not just line
+1), refuses stale/half-written batons, and consumes a baton once so it can't
+double-`/clear` a freshly booted pane.
 
 ## Design rationale
 
