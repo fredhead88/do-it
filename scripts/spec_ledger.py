@@ -205,6 +205,27 @@ OUTSTANDING_STATUSES = {
 STALE_MERGED_HOURS = 24
 AWAITING_PROD_FLOOR_HOURS = 48
 
+# F5 — contract binding. A verdict that asserts a hardcoded $ figure records the
+# contract version it held under (`contract_version` on the verdict). When the
+# fee/agreement contract is bumped, that verdict is stale-BY-DESIGN, not a
+# regression: it flips to `needs-revalidation` (re-verify under the new contract),
+# never a false `regression`. The single signal a contract bump updates:
+_CONTRACT_VERSION_FILE = (
+    Path(__file__).resolve().parent.parent / "config" / "contract_version.txt"
+)
+
+
+def current_contract_version() -> str | None:
+    """The canonical contract version (env override for tests). None ⇒ contract
+    versioning not in use, so no verdict is ever flipped to needs-revalidation."""
+    env = os.environ.get("CONTRACT_VERSION")
+    if env is not None:
+        return env.strip() or None
+    try:
+        return _CONTRACT_VERSION_FILE.read_text().strip() or None
+    except OSError:
+        return None
+
 
 # --------------------------------------------------------------------------- IO
 
@@ -287,6 +308,13 @@ def effective_status(rec: dict, verdict: dict | None) -> str:
     status = rec.get("status")
     if status != "shipped":
         return status  # pre-shipped lifecycle, and legacy stored `accepted`
+    # F5: a $-asserting verdict whose contract_version drifted from current is
+    # stale-by-design — re-verify under the new contract, never a false regression.
+    cv = (verdict or {}).get("contract_version")
+    if cv is not None:
+        cur = current_contract_version()
+        if cur is not None and cv != cur:
+            return "needs-revalidation"
     v = (verdict or {}).get("verdict")
     if v == "REJECTED":
         return "needs-rework"
@@ -351,6 +379,7 @@ def render(records: list[dict], include_all: bool) -> str:
         and _eff(r) != "needs-rework"
     ]
     needs_rework = [r for r in records if _eff(r) == "needs-rework"]
+    needs_reval = [r for r in records if _eff(r) == "needs-revalidation"]
     outstanding = [
         r
         for r in records
@@ -386,6 +415,20 @@ def render(records: list[dict], include_all: bool) -> str:
         for r in needs_rework:
             v = verdicts.get(r.get("spec_id")) or {}
             L.append(f"- ❌ {_line(r)} — **REJECTED** (judge: {v.get('judge', '?')})")
+        L.append("")
+
+    # --- F5: contract drifted under a $-asserting verdict — re-verify, NOT a regression ---
+    if needs_reval:
+        L.append(
+            f"## 🔄 NEEDS-REVALIDATION — contract bumped under a $-verdict ({len(needs_reval)})"
+        )
+        cur = current_contract_version()
+        for r in needs_reval:
+            v = verdicts.get(r.get("spec_id")) or {}
+            L.append(
+                f"- 🔄 {_line(r)} — held under contract {v.get('contract_version', '?')}, "
+                f"now {cur} (re-verify under the new contract)"
+            )
         L.append("")
 
     # --- could-not-classify first (backfill ambiguity) ---
@@ -777,6 +820,12 @@ def cmd_verify(argv: list[str]) -> int:
     ap.add_argument("--judge", required=True)  # codex | claude-fallback
     ap.add_argument("--evidence", required=True)  # ref to the typed evidence artifact
     ap.add_argument(
+        "--contract-version",
+        default=None,
+        help="F5: the contract version a $-asserting verdict held under; a later "
+        "contract bump flips this verdict to needs-revalidation (not regression)",
+    )
+    ap.add_argument(
         "--criterion",
         action="append",
         default=[],
@@ -831,6 +880,8 @@ def cmd_verify(argv: list[str]) -> int:
         rec["verdict"] = spec_verdict
     rec["judge"] = a.judge
     rec["evidence_ref"] = a.evidence
+    if a.contract_version is not None:
+        rec["contract_version"] = a.contract_version  # F5 contract binding
     rec["at"] = now
     # history records the derived value; None means incomplete at this point in time
     rec.setdefault("history", []).append(
@@ -906,8 +957,24 @@ def observable_warnings(records: list[dict]) -> list[str]:
 # ------------------------------------------------------------------------- main
 
 
+# 076 role guard. A non-builder session (ROLE=rev, ROLE=watcher) may NEVER allocate
+# a number or write a build status — its only legitimate write is `verify` (into the
+# verified/ namespace). Enforced by a guard, not convention: a reviewer that called
+# `set`/`next-num` once shipped an outage. `verify`, render, `--check`, and `alert`
+# stay open (read-only / verified-namespace).
+_BUILDER_ONLY = {"next-num", "register", "set"}
+
+
 def main() -> int:
     argv = sys.argv[1:]
+    role = os.environ.get("ROLE")
+    if role in {"rev", "watcher"} and argv and argv[0] in _BUILDER_ONLY:
+        sys.stderr.write(
+            f"REFUSED: ROLE={role} may not run `{argv[0]}` — only the orchestrator "
+            f"(orc) writes the build ledger (076 rule). A reviewer's only write is "
+            f"`verify` (the verified/ namespace).\n"
+        )
+        return 2
     if argv and argv[0] == "next-num":
         return cmd_next_num(argv[1:])
     if argv and argv[0] == "register":
