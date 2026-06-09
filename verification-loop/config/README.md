@@ -40,6 +40,6 @@ from the environment — they are never put in the config file.
 
 If you run DO-IT on multiple repos from the same machine, create a
 `<project>.json` per project and call the tick with `--config <project>`.
-The `albert-scott.json` used in the reference implementation lives outside
+The `your-project.json` used in the reference implementation lives outside
 this repo (on the operator's machine at `~/.claude/verification-loop/config/`)
 to keep project-specific values off the public bus.

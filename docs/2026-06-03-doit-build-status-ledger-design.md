@@ -65,5 +65,5 @@ thinkers.
 - **scripts/spec_ledger.py** — portable render + `--check`; `DOIT_LEDGER_DIR` env
   override so it runs against any project's ledger.
 
-Reference deployment: the Albert Scott repo, where a one-time backfill seeded 71
+Reference deployment: the maintainer's repo, where a one-time backfill seeded 71
 historical records and the live deploy-blocker, surfacing the two dropped specs above.

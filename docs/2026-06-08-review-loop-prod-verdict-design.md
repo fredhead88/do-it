@@ -280,6 +280,6 @@ first-moves and `rev` ensures they get consumed. No scraping of unbounded date d
 - The deferred list above (each with its named revisit trigger).
 - Replacing Playwright; re-architecting the cross-vendor judge.
 - Number-allocation (shipped v3.3.0).
-- AS-instance rollout beyond the standing rule: land + deploy the
-  `spec_ledger.py`/verifier/`rev-watch` changes in `/opt/albert-scott` first, then
+- reference-instance rollout beyond the standing rule: land + deploy the
+  `spec_ledger.py`/verifier/`rev-watch` changes in `$REPO_ROOT` first, then
   flip skills; never touch that tree while an orc owns it.

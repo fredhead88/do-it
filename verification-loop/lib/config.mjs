@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 const ROOT = new URL('..', import.meta.url).pathname;
-export function loadConfig(name = 'albert-scott') {
+export function loadConfig(name = 'example') {
   const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', `${name}.json`), 'utf8'));
   for (const k of ['prod_base', 'api_base', 'auth', 'page_map']) {
     if (!cfg[k]) throw new Error(`config ${name}: missing ${k}`);

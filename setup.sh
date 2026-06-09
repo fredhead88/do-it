@@ -26,7 +26,7 @@ mkdir -p "$SKILLS_DST"
 for stale in planner handover drop memo collect; do
   if [ -L "$SKILLS_DST/$stale" ]; then rm -f "$SKILLS_DST/$stale"; echo "  removed stale link: $stale"; fi
 done
-for d in think spec-handover orc verification-loop; do
+for d in think spec-handover orc rev verification-loop; do
   ln -sfn "$SKILLS_SRC/$d" "$SKILLS_DST/$d"
   echo "  linked skill: $d"
 done

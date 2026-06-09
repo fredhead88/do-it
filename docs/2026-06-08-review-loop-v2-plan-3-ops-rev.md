@@ -717,9 +717,9 @@ git commit -m "chore(release): v3.6.0 — review-loop v2 part 3 (ops + standing 
 
 ## Task 8: Live standup (acceptance — run at SYNC, against the AS instance, by/with orc)
 
-**Does NOT run in the public repo.** The AS-instance rollout, sequenced after orc adopts v3.4.0–3.6.0 into `/opt/albert-scott`:
+**Does NOT run in the public repo.** The reference-instance rollout, sequenced after orc adopts v3.4.0–3.6.0 into `$REPO_ROOT`:
 
-- [ ] Sync the v3.4.0–3.6.0 `spec_ledger.py` + `verification-loop/` + `relay-watch/` into `/opt/albert-scott` (orc-owned tree; orc does this, coherently — see the design's AS-rollout note).
+- [ ] Sync the v3.4.0–3.6.0 `spec_ledger.py` + `verification-loop/` + `relay-watch/` into `$REPO_ROOT` (orc-owned tree; orc does this, coherently — see the design's reference rollout note).
 - [ ] Register the `ROLE=rev` PostToolUse hook + cron + the liveness cron (SETUP.md). Confirm `liveness.sh hook rev` reports OK.
 - [ ] Boot `/rev` in its own tmux pane; confirm it arms `/tmp/rev-active` and reads the board.
 - [ ] **The end-to-end A1 proof** (Plan 2 Task 9): author 106's `verifier:criteria` block, force a tick, confirm 106 lands `REJECTED` → `needs-rework` at the top of the board — A1, dead on the page, finally fails the gate.

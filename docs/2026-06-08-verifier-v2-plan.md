@@ -197,7 +197,7 @@ node --check ~/.claude/verification-loop/tick.mjs && echo "live tick.mjs OK"
 Force one tick and confirm no new `verdict: REJECTED`/`CONFIRMED` with `judge: codex` is written:
 
 ```bash
-node ~/.claude/verification-loop/tick.mjs --config albert-scott --force 2>&1 | tail -20
+node ~/.claude/verification-loop/tick.mjs --config your-project --force 2>&1 | tail -20
 # then check the newest verified writes are only dom-assert/rev:
 grep -L "judge: dom-assert\|judge: rev" ~/.claude/ledger/verified/*.yml | xargs -r grep -l "judge: codex" | head
 ```
@@ -289,7 +289,7 @@ git commit -m "feat(verifier): one-time quarantine — demote LLM-on-snapshot ha
 ```bash
 cp /home/albert/do-it/verification-loop/scripts/quarantine-advisory-verdicts.mjs ~/.claude/verification-loop/scripts/ 2>/dev/null || mkdir -p ~/.claude/verification-loop/scripts && cp /home/albert/do-it/verification-loop/scripts/quarantine-advisory-verdicts.mjs ~/.claude/verification-loop/scripts/
 node ~/.claude/verification-loop/scripts/quarantine-advisory-verdicts.mjs ~/.claude/ledger/verified
-python3 ~/.claude/verification-loop/../.. 2>/dev/null; python3 /opt/albert-scott/scripts/spec_ledger.py --render 2>/dev/null | grep -A3 NEEDS-REWORK
+python3 ~/.claude/verification-loop/../.. 2>/dev/null; python3 $REPO_ROOT/scripts/spec_ledger.py --render 2>/dev/null | grep -A3 NEEDS-REWORK
 ```
 
 Expected: `NEEDS-REWORK` no longer lists the codex-rejected specs (only dom-assert/rev REJECTEDs remain, e.g. 106 if still failing). **Once this lands, the churn is both stopped (Task 2) and cleaned (Task 3) — checkpoint to confirm with the operator before Tasks 4+.**
@@ -502,7 +502,7 @@ the v3.5/3.6 gap that left the LLM path hard-authoritative.
 ## Task 9 — Live AS sync + acceptance (operational, at deploy)
 
 **Does NOT run in the public repo as a unit test.**
-- [ ] Sync the full v3.7.0 `verification-loop/` + `spec_ledger.py` to the live `~/.claude/verification-loop` and `/opt/albert-scott/scripts/` (the latter via orc, per the rollout rule).
+- [ ] Sync the full v3.7.0 `verification-loop/` + `spec_ledger.py` to the live `~/.claude/verification-loop` and `$REPO_ROOT/scripts/` (the latter via orc, per the rollout rule).
 - [ ] Re-run a tick: confirm idle-skip works, codex criteria emit advisory `NO_ORACLE`/`NEEDS_ASSERTION` (no hard verdicts), and a `dom_assert` criterion (106) still produces a hard verdict.
 - [ ] Confirm the board: the 21 are gone from NEEDS-REWORK; un-asserted shipped specs show under NO-ORACLE; rev's queue carries no weak-observation noise.
 - [ ] Begin the assertion backlog (separate, ongoing): LLM-draft + rev-accept `dom_assertion`s for high-blast-radius cards.
