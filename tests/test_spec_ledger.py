@@ -159,6 +159,34 @@ def test_render_marks_verified_from_verdict_file(monkeypatch, tmp_path):
     assert "014-v" in body and "Accepted (1)" in body
 
 
+def test_contract_bump_is_revalidation_not_regression(monkeypatch, tmp_path):
+    # F5: a $-asserting verdict held under contract v1; bumping the contract to v2
+    # must flip it to needs-revalidation, NEVER a false regression/REJECTED.
+    sl = _load(monkeypatch, tmp_path)
+    _write(sl, "201-cash-bridge", title="Cash Bridge", status="shipped")
+    sl.cmd_verify(
+        [
+            "201-cash-bridge",
+            "CONFIRMED",
+            "--judge",
+            "rev",
+            "--evidence",
+            "x",
+            "--contract-version",
+            "v1",
+        ]
+    )
+    # same contract -> accepted, not revalidation
+    monkeypatch.setenv("CONTRACT_VERSION", "v1")
+    body = sl.render(sl.load_records(), include_all=True)
+    assert "201-cash-bridge" in body and "NEEDS-REVALIDATION" not in body
+    # contract bumped -> needs-revalidation, and NOT a regression
+    monkeypatch.setenv("CONTRACT_VERSION", "v2")
+    body = sl.render(sl.load_records(), include_all=True)
+    assert "NEEDS-REVALIDATION" in body
+    assert "REJECTED" not in body  # never a false regression
+
+
 def test_render_rejected_is_outstanding(monkeypatch, tmp_path):
     sl = _load(monkeypatch, tmp_path)
     _write(sl, "015-r", title="Are", status="shipped")
