@@ -202,6 +202,13 @@ signal that never comes. The cron gate also scans the baton head (not just line
 1), refuses stale/half-written batons, and consumes a baton once so it can't
 double-`/clear` a freshly booted pane.
 
+v3.8 made those refusals *loud*: a HANDED-OFF baton the cron rejects (malformed) or a
+relay left dark past 2× the freshness window no longer just logs — it raises a
+rate-limited `<ROLE>_RELAY_ERROR` / `_RELAY_STALL` flag on the board (via
+`liveness.sh relay <role>`), so a dark relay surfaces in hours, not the ~42h it once
+ran unseen. v3.8 also gave the `rev` role the baton field template it was missing (the
+root of that 42h deadlock — its handoff omitted `handed_off_at:`).
+
 ## Design rationale
 
 The full reasoning — why one-shot sessions, why a filesystem inbox over a

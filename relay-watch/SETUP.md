@@ -119,7 +119,10 @@ That's it. The next `/orc` boot arms itself.
    ```
 3. Liveness (the dead-man's switch — run every 30 min):
    ```
-   */30 * * * * /path/to/.../liveness.sh verifier; /path/to/.../liveness.sh pane orc; /path/to/.../liveness.sh pane rev; /path/to/.../liveness.sh hook orc /path/to/repo/.claude/settings.json; /path/to/.../liveness.sh hook rev /path/to/repo/.claude/settings.json
+   */30 * * * * /path/to/.../liveness.sh verifier; /path/to/.../liveness.sh pane orc; /path/to/.../liveness.sh pane rev; /path/to/.../liveness.sh hook orc /path/to/repo/.claude/settings.json; /path/to/.../liveness.sh hook rev /path/to/repo/.claude/settings.json; /path/to/.../liveness.sh relay orc; /path/to/.../liveness.sh relay rev
    ```
    A missing hook (the 2026-06-08 silent break) now raises `*_HOOK_MISSING` on the
-   board instead of failing silently.
+   board instead of failing silently. The `relay <role>` checks (v3.8) surface a
+   `*_RELAY_ERROR` (cron refused a malformed HANDED-OFF baton) or `*_RELAY_STALL`
+   (a relay left dark past 2× the freshness window) flag — so a silent relay failure
+   becomes visible in hours.

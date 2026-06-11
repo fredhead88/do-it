@@ -37,6 +37,19 @@ flock -n 9 || exit 0
 
 ts() { date -u +%FT%TZ; }
 
+# --- Loud-but-rate-limited operator alert (v3.8.0, R3/R4) --------------------
+# A HANDED-OFF baton the cron refuses must never be a silent no-op. We write a
+# marker ONCE per error fingerprint; `liveness.sh relay <role>` surfaces it as a
+# {ROLE}_RELAY_ERROR / _RELAY_STALL flag on the board. Re-alarm only if the
+# fingerprint changes — no per-minute notification poisoning.
+notify_once() {  # $1=kind(error|stall)  $2=fingerprint  $3=message
+  local marker="/tmp/${ROLE}-relay-$1"
+  [ -f "$marker" ] && [ "$(cat "$marker" 2>/dev/null)" = "$2" ] && return 0
+  echo "$2" > "$marker"
+  echo "$(ts) ALERT($1): $3 [fp $2]" >>"$LOG"
+}
+clear_alert() { rm -f "/tmp/${ROLE}-relay-error" "/tmp/${ROLE}-relay-stall"; }
+
 # --- Manual-reboot identity guard (F12) -------------------------------------
 # If a pane was manually rebooted, a stale sentinel from the dead generation can
 # still be sitting in /tmp pointing at the OLD (now-quiet) transcript — firing on
@@ -67,13 +80,14 @@ for sentinel in /tmp/${ROLE}-handoff-due-*; do
   # 1. Baton actually written, HANDED-OFF? (the skill stamps RESUMED on pickup,
   #    so HANDED-OFF here can only mean this handoff is still pending). F11: scan
   #    the head, not just line 1 — rev's baton has its H1 title on line 1.
-  grep -qE '^status:[[:space:]]*HANDED-OFF' "$RELAY" 2>/dev/null || continue
+  grep -qE '^status:[[:space:]]*HANDED-OFF' "$RELAY" 2>/dev/null || { clear_alert; continue; }
 
   # 1b. Atomic completeness (F12): a tmp-then-rename baton has BOTH a status and
   #     a handed_off_at line. A half-written file (status but no handed_off_at,
   #     or vice versa) is refused — do not act on a partial baton.
   grep -qE '^handed_off_at:' "$RELAY" 2>/dev/null || {
-    echo "$(ts) baton $RELAY incomplete (no handed_off_at); skipping" >>"$LOG"
+    bm=$(stat -c %Y "$RELAY" 2>/dev/null || echo 0)
+    notify_once error "incomplete:$bm" "baton $RELAY HANDED-OFF but missing handed_off_at (malformed writer); skipping"
     continue
   }
 
@@ -84,6 +98,15 @@ for sentinel in /tmp/${ROLE}-handoff-due-*; do
   #     dead cycle, not a live handoff.
   baton_age=$(( $(date +%s) - $(stat -c %Y "$RELAY" 2>/dev/null || echo 0) ))
   if [ "$baton_age" -ge "$FRESH_SECS" ]; then
+    # Dark-role stall (R4): a HANDED-OFF + still-UNCONSUMED baton older than 2x
+    # the freshness window is a genuinely dark relay (vs a just-missed handoff in
+    # the FRESH..2xFRESH band, which stays quiet). Surface it in hours, not 42h.
+    bm=$(stat -c %Y "$RELAY" 2>/dev/null || echo 0)
+    _cons="/tmp/${ROLE}-relay-consumed-${PANE//[^a-zA-Z0-9]/_}"
+    if [ "$baton_age" -ge "$(( FRESH_SECS * 2 ))" ] \
+       && [ "$(cat "$_cons" 2>/dev/null)" != "$bm" ]; then
+      notify_once stall "stall:$bm" "baton $RELAY HANDED-OFF + unconsumed for ${baton_age}s (≥ $((FRESH_SECS*2))s) — $ROLE relay is dark"
+    fi
     echo "$(ts) baton $RELAY stale (${baton_age}s ≥ ${FRESH_SECS}s); refusing relay" >>"$LOG"
     continue
   fi
@@ -126,5 +149,6 @@ for sentinel in /tmp/${ROLE}-handoff-due-*; do
   sleep 6
   tmux send-keys -t "$PANE" "$BOOT_CMD" Enter
   echo "$baton_mtime" > "$CONSUMED"   # consume-once: pin this baton's mtime
+  clear_alert                         # relay fired — role no longer dark
   rm -f "$sentinel"
 done

@@ -29,17 +29,24 @@ edit `DO-IT.md` **and** append a decision here (see *Evolving DO-IT*).
 > **The bus holds everything in flight and its state; the repo holds code plus a
 > committed snapshot of that state; orc is the only thing that commits.**
 
-## Roles — 3 (was 5)
+## Roles — 5 (think · handover · orc · rev · watcher)
 
-`think` → `handover` → `orc`. `planner` is **deleted** (folded into `think`); `drop`
-never existed (memos are a `think` action).
+`planner` is **deleted** (folded into `think`); `drop` never existed (memos are a
+`think` action). `rev` (v3.6.0) and `watcher` (v3.7.0) were added later as the
+review/process twins.
 
-- **think** — read-only on code. Discovery/brainstorm → spec; review of shipped work;
-  and now **intake/triage** of a raw dump. Safe to run several at once.
+- **think** — read-only on code. Discovery/brainstorm → spec, and **intake/triage**
+  of a raw dump. Safe to run several at once. (Review of shipped work moved to `rev`.)
 - **handover** — the atomic, self-verifying drop of a finished spec into the bus +
   the index.
 - **orc** — the singleton integrator: the only session that owns the working tree,
   commits, and deploys.
+- **rev** (v3.6.0) — the standing reviewer: drives the verification loop, writes
+  per-criterion verdicts, files needs-human correctives. Read-only on code; never
+  commits; never authors specs.
+- **watcher** (v3.7.0) — the process reviewer (rev's twin one level up): reviews the
+  build/review loop itself, evidence-bound, proposes rarely via `/think`. Read-only on
+  code/git/bus; registers no NNN.
 
 ## Two homes
 
@@ -310,6 +317,23 @@ decision below.** Never silently. The system evolves the way you work.
   constraint: the helper must exist in the `spec_ledger.py` a skill invokes before
   that skill is flipped to call it — the public repo ships them together; a separate
   running instance lands/deploys the helper first.
+- **2026-06-11 (v3.8.0) — relay baton hardening is right-sized, not a rewrite.** Three
+  silent auto-relay failures in two days (rev had no `handed_off_at` template → F11; and
+  in the baton-direct variant, CWD-omission + `baton_pane` quoting). Two adversarial
+  audit rounds (5 agents each) first pushed a `relay_baton` writer-CLI + typed state
+  machine (remove schema authorship from the LLM), then rejected it: for a solo,
+  actively-watched one-box it creates a single point of failure across all roles, a
+  bootstrap chicken-egg on the port, a RELAYED-before-send race, and an attempt-counter
+  that voids exactly when a session crashes on boot — while not actually *enforcing*
+  CLI use (the writer is still an LLM following prose). The proportionate fix: give rev
+  the missing template (F11's root was an absent template, not that templates can't
+  work — orc has one and never hit F11), and convert the reader's silent skips into a
+  rate-limited marker + a dark-role stall alert surfaced by the existing `liveness.sh`
+  watchdog. **Also rejected/deferred:** a `/goal`-driven autonomous "retry until rev
+  clears" loop — every audit flagged it weakest (not durable across `/clear`; verdict
+  probe undefined); revisit as its own design after validating `/goal`. Public is the
+  sentinel-based reader; the baton-direct variant's CWD/quoting fixes land where that
+  variant runs.
 
 ## Rejected alternatives
 

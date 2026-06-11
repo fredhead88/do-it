@@ -60,9 +60,21 @@ For each spec in `Awaiting prod-verification`:
 ## When the context watch fires
 
 The `REV CONTEXT WATCH` message is your relay signal: finish the current atomic
-review step, write the baton (`docs/sessions/rev-relay.md`, `status: HANDED-OFF`,
-tmp-then-rename) summarizing what's mid-review, then STOP. The watcher `/clear`s and
-boots a fresh `/rev` automatically.
+review step, write the baton (`docs/sessions/rev-relay.md`, tmp-then-rename) summarizing
+what's mid-review, then STOP. The watcher `/clear`s and boots a fresh `/rev` automatically.
+
+Write **exactly these fields** (the relay cron requires both `status:` AND
+`handed_off_at:`; a baton missing `handed_off_at:` is silently skipped every minute —
+this was the F11 deadlock, caused by rev having no field template at all):
+
+```
+status: HANDED-OFF
+handed_off_at: <ISO-8601, e.g. 2026-06-11T14:03Z>
+mid_review: <spec id + which criterion you were on, or —>
+verified_this_wave: [<spec ids confirmed/rejected this session>]
+needs_human_filed: [<corrective ids you filed, or —>]
+next_action: <the single thing you were about to do>
+```
 
 ## Boundaries (hard)
 

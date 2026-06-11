@@ -8,6 +8,39 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.8.0] — 2026-06-11
+
+**Relay baton hardening (right-sized).** Fixes the silent auto-relay failures that
+left a role's context-ceiling handoff dead for hours, after two adversarial audit
+rounds rejected a heavier CLI/state-machine as over-built for a watched one-box.
+Design + the considered-and-rejected alternatives:
+`docs/2026-06-11-v3.8-relay-hardening-and-goal-loop-design.md`.
+
+### Fixed
+- **F11 — rev had no baton field template.** `skills/rev/SKILL.md` now carries an
+  explicit baton template with `handed_off_at:` (the field the relay cron requires);
+  previously rev's prose-only instruction produced `updated_at:` and the cron skipped
+  every minute (a role dark ~42h in one observed window). orc already had a template.
+
+### Added
+- **Loud-but-rate-limited relay failure (R3).** `relay-watch.sh` no longer silently
+  logs-and-skips a HANDED-OFF-but-malformed baton: it writes a `/tmp/<role>-relay-error`
+  marker ONCE per error fingerprint (no per-minute poisoning).
+- **Dark-role stall alert (R4).** A HANDED-OFF + unconsumed baton older than 2× the
+  freshness window writes `/tmp/<role>-relay-stall` — a dark relay surfaces in hours.
+- **`liveness.sh relay <role>`** surfaces both markers as `<ROLE>_RELAY_ERROR` /
+  `<ROLE>_RELAY_STALL` flags on the board (the existing watchdog channel).
+
+### Notes
+- Deliberately NOT included (considered + rejected — see the design doc): a
+  `relay_baton` writer-CLI / typed state machine (over-built, new single-point-of-
+  failure + race surface for a solo watched one-box), and a `/goal`-driven autonomous
+  "retry until rev clears" loop (deferred to its own design; validate `/goal`'s
+  `/clear` behaviour first).
+- Incidents specific to the baton-direct relay variant (CWD-in-arming, `baton_pane`
+  unquoting) are fixed in that variant where it runs; this release targets the
+  sentinel-based reader shipped here.
+
 ## [3.7.0] — 2026-06-09
 
 **Loop self-repair — the `watcher` role, a relay-deadlock fix, and predictive

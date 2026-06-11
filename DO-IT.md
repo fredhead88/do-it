@@ -1,6 +1,6 @@
 # DO-IT — Pipeline Operating Protocol
 
-**Version:** 3.7.0 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
+**Version:** 3.8.0 · history: `CHANGELOG.md` · rationale: `docs/DESIGN.md`
 
 The single source of truth for how the spec pipeline works. Every role-skill
 (`think`, `spec-handover`, `orc`, `rev`, `watcher`) reads this and obeys it — they do **not** restate its

@@ -40,5 +40,15 @@ case "${1:-}" in
       drop "${role^^}_HOOK_MISSING"
     else raise "${role^^}_HOOK_MISSING" "no $role token-watch hook in $settings (relay silently dead)"; fi
     ;;
-  *) echo "usage: liveness.sh verifier | pane <role> | hook <role> <settings.json>" >&2; exit 2 ;;
+  relay)
+    # v3.8.0 (R3/R4): surface the relay cron's rate-limited alert markers
+    #   /tmp/<role>-relay-error  — a HANDED-OFF baton the cron refused (malformed)
+    #   /tmp/<role>-relay-stall  — a HANDED-OFF baton dark > 2x the freshness window
+    role="${2:?role}"
+    for kind in error stall; do
+      marker="/tmp/${role}-relay-${kind}"; flag="${role^^}_RELAY_${kind^^}"
+      if [ -f "$marker" ]; then raise "$flag" "$(cat "$marker" 2>/dev/null); see /tmp/${role}-relay-watch.log"; else drop "$flag"; fi
+    done
+    ;;
+  *) echo "usage: liveness.sh verifier | pane <role> | hook <role> <settings.json> | relay <role>" >&2; exit 2 ;;
 esac
