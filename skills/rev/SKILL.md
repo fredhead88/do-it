@@ -31,9 +31,12 @@ the pair; orc is the *build* half. One builds, one reviews.
    and clear any stale rev sentinels for it — so a fresh rev is never wiped by a
    leftover handoff:
    ```bash
-   printf "PANE=%s\n" "$TMUX_PANE" > /tmp/rev-active
+   printf "PANE=%s\nCWD=%s\nTOKEN=%s\n" "$TMUX_PANE" "$(pwd)" "$(uuidgen)" > /tmp/rev-active
    grep -l "PANE=$TMUX_PANE" /tmp/rev-handoff-due-* 2>/dev/null | xargs -r rm -f
    ```
+   (`TOKEN=` is the **author guard**: the relay cron force-clears this pane ONLY for a
+   baton carrying this exact token — put the same value in `baton_token:` when you write
+   the baton, so a stray non-rev writer can never relay you.)
    Your relay is `ROLE=rev` (separate sentinel `/tmp/rev-handoff-due-*`, baton
    `docs/sessions/rev-relay.md`, reboot `/rev`). It can never reboot your pane as
    `/orc`.
@@ -92,6 +95,7 @@ this was the F11 deadlock, caused by rev having no field template at all):
 ```
 status: HANDED-OFF
 handed_off_at: <ISO-8601, e.g. 2026-06-11T14:03Z>
+baton_token: <the TOKEN= value from /tmp/rev-active (`grep '^TOKEN=' /tmp/rev-active`) — cron relays ONLY on a match; blocks a stray non-rev baton from clearing you>
 mid_review: <spec id + which criterion you were on, or —>
 verified_this_wave: [<spec ids confirmed/rejected this session>]
 needs_human_filed: [<corrective ids you filed, or —>]

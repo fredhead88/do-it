@@ -23,16 +23,32 @@ can restart it but can't see token counts:
    call it reads the session transcript's last `usage` block;
    `input + cache_read + cache_creation` is the exact live context size. Past
    the threshold it injects an "ORC CONTEXT WATCH" message (the orc skill
-   treats this as an official relay signal: write the baton, then STOP) and
-   writes a sentinel to `/tmp/orc-handoff-due-<session>`.
-2. **`relay-watch.sh`** — a cron job, every minute. When the sentinel exists
-   AND the baton says `status: HANDED-OFF` AND the transcript has been quiet
-   45s AND the pane is alive, it sends `/clear`, waits, sends `/orc`, and
-   deletes the sentinel.
+   treats this as an official relay signal: write the baton, then STOP). It
+   also drops `/tmp/orc-handoff-due-<session>`, but only as its own "already
+   nudged, don't re-nag" marker — the cron no longer reads it (see below).
+2. **`relay-watch.sh`** — a cron job, every minute. **Baton-direct** (v3.7+):
+   it reads `/tmp/<role>-active` (pane + CWD + TOKEN) and the baton
+   (`docs/sessions/<role>-relay.md`) *directly* — no sentinel needed. When the
+   baton says `status: HANDED-OFF`, is atomically complete (`handed_off_at:`
+   present), is fresh, the pane has been quiet 45s, and — **the author guard
+   (v3.10)** — its `baton_token:` matches the `TOKEN=` in `/tmp/<role>-active`,
+   it sends `/clear`, waits, sends `/<role>`, and stamps a consume-once marker.
 
-**Scoping:** the hook only acts in the pane recorded in `/tmp/orc-active`,
-which the orc skill writes at boot (First moves, step 0). Thinker sessions,
-other projects, anything else — instant no-op.
+   The sentinel path was **retired** (deviation #1, 2026-06-10): the hook used
+   to drop the sentinel only at/above the hard line, so a deliberate handoff in
+   the soft..hard band left no sentinel and the cron never fired — a 77-minute
+   live wedge on 2026-06-09. Reading the baton directly makes the relay
+   token-level-agnostic. The author guard then closes the one hazard
+   baton-direct opened: a stray sub-worker that hits its own context limit and
+   stamps a `HANDED-OFF` over the baton can no longer force-clear a live role —
+   its token won't match, so the cron refuses loudly (`*_RELAY_ERROR`) instead
+   of relaying. A role armed before the guard has no `TOKEN=`; it falls through
+   and is honored with a logged note (back-compat, never wedges).
+
+**Scoping:** the cron only acts on the pane recorded in `/tmp/<role>-active`,
+which the role skill writes at boot (First moves, step 0) along with its CWD and
+per-session author TOKEN. Thinker sessions, other projects, anything else —
+instant no-op.
 
 ## Requirements
 
@@ -86,7 +102,10 @@ That's it. The next `/orc` boot arms itself.
 - **Pause the automation** (keep a session past the threshold):
   `rm /tmp/orc-active`. The next `/orc` boot re-arms.
 - **Covering an already-running orc** (booted before install): tell it to run
-  `printf "PANE=%s\n" "$TMUX_PANE" > /tmp/orc-active`.
+  `printf "PANE=%s\nCWD=%s\nTOKEN=%s\n" "$TMUX_PANE" "$(pwd)" "$(uuidgen)" > /tmp/orc-active`,
+  and to put that same `TOKEN=` value in its baton's `baton_token:` field. (A role
+  armed without a TOKEN still relays — back-compat — but isn't author-guarded until
+  it re-arms.)
 - **Testing without sending keys:** `ORC_WATCH_DRY=1 relay-watch.sh` logs
   what it would do; `ORC_RELAY_FILE` and `ORC_QUIET_SECS` override the other
   gates. To exercise the hook: arm `/tmp/orc-active` with your pane and run
@@ -95,11 +114,14 @@ That's it. The next `/orc` boot arms itself.
 
 ## Failure modes (all fail safe = fall back to manual)
 
-- Orc not in tmux / pane closed → sentinel dropped, logged.
-- Baton never written (orc ignored the signal) → watcher waits forever; the
+- Orc not in tmux / pane closed → cron finds no live pane, no-op, logged.
+- Baton never written (orc ignored the signal) → watcher waits; the freshness
+  gate refuses a stale baton and a dark relay surfaces as `*_RELAY_STALL`; the
   hook re-reminds every 10 minutes.
-- Two repos handing off simultaneously → fine; sentinels are per-session and
-  carry their own project path.
+- Foreign writer stamps HANDED-OFF over the baton (stray sub-worker) → token
+  mismatch, refused loudly as `*_RELAY_ERROR`, never force-clears the live role.
+- Two repos handing off simultaneously → fine; the cron resolves each role's
+  CWD from its own `/tmp/<role>-active`, so batons never cross repos.
 - The `/clear`//`/orc` keystrokes go through Claude Code's slash-command
   menu; exact match ranks first. If a future skill name shadows `/orc`,
   add a trailing space to the send-keys strings.

@@ -8,6 +8,35 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.10.0] — 2026-06-21
+
+**Relay canonicalized to baton-direct + an author-token guard.** The distributed
+`relay-watch.sh` was still the older **sentinel model**: it looped hook-written
+`/tmp/<role>-handoff-due-*` files and relayed only if a sentinel *and* a HANDED-OFF
+baton existed. The sentinel was dropped only at/above the hard line, so a deliberate
+handoff in the soft..hard band left no sentinel and never relayed — a 77-minute live
+wedge (2026-06-09). The live Albert Scott instance had already retired the sentinel for
+the **baton-direct** model (the cron reads `/tmp/<role>-active` + the baton directly,
+relaying at any token level) but that was never ported back here. Baton-direct opened one
+hazard — a stray sub-worker that hits its own context limit and stamps a HANDED-OFF over
+the baton could force-clear a live role — now closed by the **author-token guard**: the
+role writes a per-session `TOKEN=` into `/tmp/<role>-active` at arming and the same value
+as `baton_token:` in its handoff; the cron force-clears ONLY on a match, else refuses
+loudly (`*_RELAY_ERROR`). Back-compat: a role armed before the guard has no token and
+falls through with a logged note. Why: `docs/2026-06-21-relay-baton-author-guard-design.md`.
+
+### Changed
+- `relay-watch/relay-watch.sh` — replaced the sentinel loop with the baton-direct cron:
+  reads `/tmp/<role>-active` directly (no sentinel), plus the F11/F12 hardening (head-scan,
+  atomic-completeness, freshness gate, R5 atomic consume-once, R2 wrong-pane guard) and the
+  new step 2b author-token gate.
+- `relay-watch/orc-token-watch.py` — synced to the live hook; the sentinel it drops is now
+  only the hook's own re-nag dedup marker, no longer a cron trigger.
+- `skills/{orc,rev,watcher}/SKILL.md` — arming step 0 writes `PANE`+`CWD`+`TOKEN=$(uuidgen)`
+  to `/tmp/<role>-active`; baton templates carry `baton_token:` (= that TOKEN).
+- `relay-watch/SETUP.md` — documents the baton-direct flow, the author guard, and the
+  foreign-writer failure mode.
+
 ## [3.9.0] — 2026-06-21
 
 **rev close-out gate for data-outcome criteria.** A criterion whose proof is a

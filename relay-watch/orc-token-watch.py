@@ -24,13 +24,11 @@ import sys
 import time
 
 THRESHOLD = int(os.environ.get("ORC_WATCH_THRESHOLD", "400000"))
-# Deadlock fix: arm the relay sentinel at the SOFT line, not the hard threshold.
-# A handoff in the soft..hard band used to leave no sentinel -> the cron never read
-# the HANDED-OFF baton -> the session wedged forever (2026-06-09: orc @371k + rev
-# @384k both stood down between 360k and 400k and neither relayed). The hard line
-# only escalates the nudge text now; the sentinel (what lets the cron act) is dropped
-# at SOFT, so any handoff at or above the soft line relays.
-SOFT = int(os.environ.get("ORC_WATCH_SOFT", str(int(THRESHOLD * 0.9))))
+# F7 soft upper-context line: an EARLIER advisory nudge (no forced relay) so a
+# session wraps up its current step before the hard 400k cutover. A deliberate
+# handoff at 393k once sat un-relayed (F12); the soft line gives runway. Advisory
+# only — it writes a non-relay marker the relay watcher never globs.
+SOFT_THRESHOLD = int(os.environ.get("ORC_WATCH_SOFT", "360000"))
 ROLE = os.environ.get("ROLE", "orc")
 BOOT_CMD = os.environ.get("ROLE_BOOT_CMD", f"/{ROLE}")
 ACTIVE = f"/tmp/{ROLE}-active"
@@ -103,10 +101,18 @@ def main():
         return
 
     ctx = current_context(transcript)
-    if ctx < SOFT:
+    if ctx < SOFT_THRESHOLD:
         return
     hard = ctx >= THRESHOLD
 
+    # Deadlock fix (do-it 1bd701a / CONSOLIDATION-SPEC P1): arm the relay sentinel at
+    # the SOFT line, not just the hard ceiling. Previously a handoff in the soft..hard
+    # band wrote only an advisory marker the relay watcher never globs, so a session
+    # that stood down between soft and hard left NO sentinel and never relayed —
+    # observed 2026-06-09: orc @371k + rev @384k both wedged in that band (silent
+    # mutual-wait deadlock). The hard line now only escalates the nudge text; the
+    # sentinel (what lets the cron act on a HANDED-OFF baton) is dropped at SOFT, so
+    # any handoff at or above the soft line relays.
     sentinel = f"/tmp/{ROLE}-handoff-due-{sid or 'unknown'}"
     if (
         os.path.exists(sentinel)
@@ -128,8 +134,8 @@ def main():
     )
     msg = (
         f"{ROLE.upper()} CONTEXT WATCH ({band}): live context is {ctx:,} tokens "
-        f"(soft {SOFT:,} / hard {THRESHOLD:,}). This is an observable relay signal per "
-        f"the {ROLE} skill. {urgency} write the relay baton "
+        f"(soft {SOFT_THRESHOLD:,} / hard {THRESHOLD:,}). This is an observable relay "
+        f"signal per the {ROLE} skill. {urgency} write the relay baton "
         f"(docs/sessions/{ROLE}-relay.md, status: HANDED-OFF, tmp-then-rename) and STOP "
         f"— do not start new work. The relay watcher will /clear this pane and boot a "
         f"fresh {BOOT_CMD} automatically once the baton lands; you do not need to tell "

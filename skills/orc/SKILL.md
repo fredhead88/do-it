@@ -52,8 +52,12 @@ intent/architecture/health docs pristine.
 
 ## First moves (every session)
 
-0. **Arm the context watch:** `printf "PANE=%s\n" "$TMUX_PANE" > /tmp/orc-active;
+0. **Arm the context watch:** `printf "PANE=%s\nCWD=%s\nTOKEN=%s\n" "$TMUX_PANE" "$(pwd)" "$(uuidgen)" > /tmp/orc-active;
    grep -l "PANE=$TMUX_PANE" /tmp/orc-handoff-due-* 2>/dev/null | xargs -r rm -f`.
+   (`TOKEN=` is the **author guard**: the relay cron force-clears this pane ONLY for a
+   baton carrying this exact token, so a stray sub-worker baton can never relay you. Put
+   the same value in `baton_token:` when you write the baton — read it back with
+   `grep '^TOKEN=' /tmp/orc-active`.)
    (The second command clears stale handoff sentinels for this pane — protects a
    manually-restarted orc from being /clear'd by the watcher acting on the previous
    generation's sentinel.)
@@ -335,6 +339,7 @@ as what branches:
 ```
 status: HANDED-OFF
 handed_off_at: <ISO>
+baton_token: <the TOKEN= value from /tmp/orc-active — `grep '^TOKEN=' /tmp/orc-active`; the cron relays ONLY on a match, so this is what blocks a stray worker baton from force-clearing you>
 plan_files: [docs/do-it/plans/...]
 in_flight_workers:
   - <objective> → branch <name> / worktree <path>  (finished? adopt : re-dispatch)

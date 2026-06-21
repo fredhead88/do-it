@@ -43,8 +43,17 @@ machine is itself producing defects, churn, or invisible work.
 
 ## First moves (every session)
 
-0. **Arm the context watch** exactly as orc/rev do (write `/tmp/watcher-active` with the
-   pane; the relay cron line is `ROLE=watcher`). Skip silently if not in tmux.
+0. **Arm the context watch.** Run this shell snippet (skip silently if `$TMUX_PANE` is empty):
+   ```bash
+   printf "PANE=%s\nCWD=%s\nTOKEN=%s\n" "$TMUX_PANE" "$(pwd)" "$(uuidgen)" > /tmp/watcher-active
+   ```
+   This writes your pane + CWD + a per-session author **TOKEN** to `/tmp/watcher-active`. The
+   baton-direct relay cron (`ROLE=watcher`) reads this file every minute to resolve your pane
+   and baton — if it's missing, the relay cannot find you. The cron force-clears you ONLY for a
+   baton whose `baton_token:` matches this `TOKEN=` (so a stray non-watcher writer can't relay
+   you) — put the same value in your baton's `baton_token:` field
+   (`grep '^TOKEN=' /tmp/watcher-active`). Re-arm after every relay (the fresh `/watcher`
+   writes a new `/tmp/watcher-active`).
 1. **Pick up your relay baton** `docs/sessions/watcher-relay.md` if `HANDED-OFF` — your OWN
    baton, never orc's or rev's. Stamp `RESUMED`.
 2. **Read the registry** `.claude/bugs/REGISTRY.md` — the current ranked classes.
@@ -74,9 +83,11 @@ and tell the operator one line. A thinker turns it into a spec if it holds; you 
 
 A `WATCHER CONTEXT WATCH` message (the token-watch hook at the hard ceiling, soft line
 earlier) is your relay signal: finish the current sweep, write
-`docs/sessions/watcher-relay.md` (`status: HANDED-OFF`, tmp-then-rename, status reachable in
-the first ~5 lines so the hardened relay watcher fires), then STOP. The cron `/clear`s and
-boots a fresh `/watcher`. Never two watchers; never relay orc's or rev's baton.
+`docs/sessions/watcher-relay.md` (`status: HANDED-OFF`, plus `handed_off_at:` and
+`baton_token:` = the `TOKEN=` from `/tmp/watcher-active` — the cron relays ONLY on a token
+match; tmp-then-rename, status reachable in the first ~5 lines so the hardened relay watcher
+fires), then STOP. The cron `/clear`s and boots a fresh `/watcher`. Never two watchers;
+never relay orc's or rev's baton.
 
 ## Status board (open EVERY reply)
 
