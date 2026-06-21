@@ -31,7 +31,8 @@ either is missing, do **not** hand over — say why and send the user back to fi
    concurrent `think`/handover session blocks until the reservation is on disk and
    sees the next number, never the same one (this is what killed the 110
    double-book). It refuses anything that wouldn't pass `--check`, and refuses an
-   absurd jump (≥150) telling you to hunt the poisoning file first.
+   absurd JUMP (the top number sitting far above the second-highest — the signature
+   of a poisoning file, not a fixed ceiling) telling you to hunt the offender first.
 
    ```bash
    # Prints ONLY the zero-padded number, e.g. 109. The ledger record is now born;

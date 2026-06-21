@@ -8,6 +8,25 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.8.1] — 2026-06-21
+
+**Allocation poison-guard made relative (was a stale absolute ceiling).** The
+`next-num` sanity guard refused any allocation where the next number was `≥ 150`,
+on the assumption the genuine sequence lived in the low 100s. Real sequences grow
+without bound — once specs passed 150 the guard false-tripped on **every** real
+allocation, making `next-num` dead for spec handover. The trailing-hyphen `_NUM_RE`
+already prevents a `2026-` date-stem year from reading as 202, so the only remaining
+poison is a wildly mis-numbered file — now detected by its **jump** above the
+second-highest number (`max − second_highest > 40`), which never goes stale.
+
+### Fixed
+- `scripts/spec_ledger.py` — replaced `ALLOC_SANITY_CEILING = 150` (absolute) with
+  `ALLOC_GAP_CEILING = 40` (relative gap). Added `_scan_bus_numbers()` /
+  `scan_bus_top_two()`; `next-num` now refuses on an outlier jump, not an absolute
+  value. `scan_bus_max()` unchanged in behaviour.
+- `skills/spec-handover/SKILL.md`, `skills/think/SKILL.md` — prose updated from the
+  stale `≥150` framing to the relative-jump signature.
+
 ## [3.8.0] — 2026-06-11
 
 **Relay baton hardening (right-sized).** Fixes the silent auto-relay failures that

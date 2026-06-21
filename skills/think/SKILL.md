@@ -104,7 +104,7 @@ the later thinking). Two outcomes per topic:
   # Prints ONLY the zero-padded number and creates
   # ~/.claude/brief-inbox/${NNN}-<slug>.brief.md as a stub you then fill in.
   NNN=$(python scripts/spec_ledger.py next-num --kind brief --slug <slug>) \
-    || { echo "allocation refused — read the stderr (poisoned max ≥150?), fix, retry"; exit 1; }
+    || { echo "allocation refused — read the stderr (poisoned max: an outlier jump?), fix, retry"; exit 1; }
   ```
 
   Then fill the created stub: `topic:`, `problem:` (one paragraph — who hurts and

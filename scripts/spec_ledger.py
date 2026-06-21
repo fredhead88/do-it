@@ -74,11 +74,16 @@ BRIEF_INBOX = Path(
 
 # Genuine bus numbers are 3 digits FOLLOWED BY A HYPHEN. The trailing `-` is
 # load-bearing: without it the year in a grandfathered date-stem file
-# (`2026-05-31-...`) reads as "202" and poisons allocation. The sanity ceiling
-# trips when the computed next number leaves the genuine low-100s sequence —
-# the signature of a mis-numbered/date-stem file having inflated the max.
+# (`2026-05-31-...`) reads as "202" and poisons allocation.
+#
+# The poison guard is RELATIVE, not absolute. The sequence grows without bound, so a
+# fixed ceiling goes stale and false-trips on every real allocation once the sequence
+# passes it. The `_NUM_RE` hyphen already stops a `2026-` year reading as 202; the
+# only remaining poison is a wildly mis-numbered 3-digit file, which shows up as an
+# outlier JUMP above the second-highest number. Refuse a jump larger than this gap
+# (the live sequence is dense, gaps of 1–2).
 _NUM_RE = re.compile(r"^([0-9]{3})-")
-ALLOC_SANITY_CEILING = 150
+ALLOC_GAP_CEILING = 40
 
 
 # Verifier-owned namespace — the builder's glob("*.yml") never touches this subdir.
@@ -162,18 +167,33 @@ def _bus_dirs() -> list[Path]:
     ]
 
 
-def scan_bus_max() -> int:
-    """Highest NNN across every bus dir, matching 3 digits FOLLOWED BY a hyphen
-    (so a `2026-...` year never reads as 202). Returns 0 on an empty bus."""
-    hi = 0
+def _scan_bus_numbers() -> list[int]:
+    """All distinct NNN across every bus dir, descending. Matches 3 digits FOLLOWED
+    by a hyphen (so a `2026-...` year never reads as 202). Empty bus -> []."""
+    nums: set[int] = set()
     for d in _bus_dirs():
         if not d.exists():
             continue
         for entry in d.iterdir():
             m = _NUM_RE.match(entry.name)
             if m:
-                hi = max(hi, int(m.group(1)))
-    return hi
+                nums.add(int(m.group(1)))
+    return sorted(nums, reverse=True)
+
+
+def scan_bus_max() -> int:
+    """Highest NNN across every bus dir. Returns 0 on an empty bus."""
+    nums = _scan_bus_numbers()
+    return nums[0] if nums else 0
+
+
+def scan_bus_top_two() -> tuple[int, int]:
+    """(highest, second-highest) distinct NNN across the bus; second is 0 when fewer
+    than two distinct numbers exist. Used to detect a poisoned max by its jump."""
+    nums = _scan_bus_numbers()
+    if not nums:
+        return 0, 0
+    return nums[0], (nums[1] if len(nums) > 1 else 0)
 
 
 VALID_STATUS = {
@@ -647,15 +667,16 @@ def cmd_next_num(argv: list[str]) -> int:
             )
 
     with _bus_lock():
-        hi = scan_bus_max()
+        hi, second = scan_bus_top_two()
         nxt = hi + 1
-        if nxt >= ALLOC_SANITY_CEILING:
+        if second and (hi - second) > ALLOC_GAP_CEILING:
             return _die(
-                f"computed next number {nxt} ≥ {ALLOC_SANITY_CEILING} — the genuine "
-                f"sequence is in the low 100s, so a mis-numbered or date-stem file "
-                f"has poisoned the max (current max {hi}). Hunt it before allocating:\n"
-                f"    find ~/.claude -name '2[0-9][0-9]-*'\n"
-                f"fix the offender, then re-run. Refusing to bake in a poisoned number."
+                f"highest bus number {hi} is {hi - second} above the next-highest "
+                f"({second}) — far past the dense live sequence, the signature of a "
+                f"mis-numbered file poisoning the max. Hunt it before allocating:\n"
+                f"    ls ~/.claude/spec-inbox ~/.claude/spec-inbox/_archive ~/.claude/ledger \\\n"
+                f"       ~/.claude/brief-inbox ~/.claude/brief-inbox/_archive | sort -n | tail\n"
+                f"fix the offender, then re-run. Refusing to bake {nxt} onto a poisoned max."
             )
         nnn = f"{nxt:03d}"
         spec_id = f"{nnn}-{slug}"
