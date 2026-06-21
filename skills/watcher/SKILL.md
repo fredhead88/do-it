@@ -40,6 +40,11 @@ machine is itself producing defects, churn, or invisible work.
 5. **Hard proposal quota: at most ONE proposal per session, at most THREE open at a time.**
    If three watcher proposals are already open (un-actioned in `/think`'s inbox), you make
    ZERO new ones — you cannot churn the rules. Surface the backlog instead.
+   **"Session" = one context (one `/clear`-boot), NOT one sweep.** Chained self-scheduled
+   sweeps inside the same context share ONE quota; only a relay (`/clear` + fresh `/watcher`)
+   resets it. This removes the rationalization surface where each sweep claims to be "a fresh
+   session" (2026-06-21: one context filed two artifacts on successive sweeps, each justified
+   that way). The ≤3-open backstop already bounds total churn, so per-context is safe.
 
 ## First moves (every session)
 
@@ -57,11 +62,27 @@ machine is itself producing defects, churn, or invisible work.
 1. **Pick up your relay baton** `docs/sessions/watcher-relay.md` if `HANDED-OFF` — your OWN
    baton, never orc's or rev's. Stamp `RESUMED`.
 2. **Read the registry** `.claude/bugs/REGISTRY.md` — the current ranked classes.
-3. **Sweep the process signals** (read-only): the newest `~/.claude/loop-observation/`
-   files, the needs-human store, the relay-watch logs, the ledger render + recent history.
-4. **Count open watcher proposals** in `/think`'s inbox (the quota gate). If ≥3, you propose
+3. **Re-verify your OWN past proposals landed — don't manufacture false wins.** Before
+   sweeping for anything new, re-check every watcher proposal archived in the last ~3 days:
+   is the guard it proposed actually IMPLEMENTED and live, still parked, or hollow? **Grep for
+   the guard itself** (`grep '.venv' deploy.sh`, the skill line, the ledger row) — never trust
+   the ACK or the archive filename. "ACK'd", "routed to /think", and "implemented+verified" are
+   THREE different states; call a proposal "closed" only when the guard is observed live.
+   (2026-06-21: the watcher reported a cron-interpreter finding had "closed the loop
+   end-to-end" when it was only ACK'd + parked — a `.venv` cron could still ship dead. A
+   watcher manufacturing a hollow verification about its OWN work is the exact failure it
+   exists to catch in others.)
+4. **Sweep the process signals** (read-only). Blessed live signals: `git log`, the ledger
+   render (`spec_ledger.py`) + recent history (`~/.claude/ledger/*.yml` + `verified/`),
+   `/tmp/{orc,rev}-relay-watch.log`, the needs-human store / corrective-inbox, and
+   `spec-inbox/_archive`. Resolve panes ONLY via `/tmp/{orc,rev,watcher}-active` — NEVER a
+   hard-coded pane id (2026-06-21: a stale `%0` orc reference read as "orc pane blank" after
+   the orc had relayed to `%8`). `~/.claude/loop-observation/` counts *only if fresh* — it has
+   gone 10 days stale (2026-06-11) and silently demoted the watcher to undeclared git/pane
+   scraping; treat it as supplementary, not primary.
+5. **Count open watcher proposals** in `/think`'s inbox (the quota gate). If ≥3, you propose
    nothing this session.
-5. **Post the board** (below) and wait.
+6. **Post the board** (below) and wait.
 
 ## What a proposal looks like
 
@@ -76,8 +97,20 @@ proposal:  <the systemic guard — a gate, a skill line, a registry entry>
 why-now:   <why convention won't fix it — the "guard not convention" test>
 ```
 
-Write it as a `/think` memo (`~/.claude/spec-inbox/memo-watcher-<slug>.md`, tmp-then-rename)
-and tell the operator one line. A thinker turns it into a spec if it holds; you never do.
+Write it to the **canonical advisory lane — `~/.claude/brief-inbox/memo-watcher-<slug>.md`**
+(tmp-then-rename), NOT `spec-inbox/`. This is a correctness rule, not cosmetics: `brief-inbox`
+is where `/think`'s boot inventory and the numbered-brief machinery (`NNN-<slug>.brief.md`)
+live, so a finding filed here is *obliged to be triaged*; a finding dropped in `spec-inbox`
+sits among numbered specs as a lone untracked straggler and dies silently (the exact gap that
+lost a rev finding before the corrective-inbox existed — `memo-133`). Tell the operator one
+line. A thinker turns it into a numbered brief or a spec if it holds, **or logs an explicit
+drop-with-reason** — never nothing; you never number it yourself (the 076 guard).
+
+This is the non-building-role rule both you and rev now share: **a finding becomes tracked
+work (a numbered brief / a `fixes:[NNN]` or `rework` row) or an explicitly logged drop —
+never an unnumbered orphan.** rev's corrective-inbox is the reference implementation; your
+`memo-watcher-*` in `brief-inbox` is the equivalent, and `/think`/`orc` are obliged to convert
+it on their next boot.
 
 ## Self-relay (context ceiling)
 
@@ -93,9 +126,10 @@ never relay orc's or rev's baton.
 
 ```
 WATCHER — loop health sweep
-SIGNALS READ: <loop-observation files, ledger render, needs-human store, relay logs>
+SIGNALS READ: <git log, ledger render+history, relay-watch logs, needs-human/corrective, spec-inbox/_archive; loop-observation if fresh>
+PRIOR PROPOSALS: <each re-verified: implemented+verified (guard grepped live) | routed/parked | hollow — never collapse these>
 HEALTH: <one line — loop healthy / a recurring class observed>
-OPEN PROPOSALS: <N of max 3>   QUOTA: <may propose | quota full — surfacing backlog>
+OPEN PROPOSALS: <N of max 3>   QUOTA: <may propose (per-context) | quota full — surfacing backlog>
 PROPOSAL: <none this session | the one class, with evidence>
 NEXT: <what you'll watch next, or the handoff>
 ```

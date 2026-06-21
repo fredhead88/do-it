@@ -38,6 +38,7 @@ offer to spec it instead.
    # FIRST — shipped specs carrying a deferred/blocked part (the bite risk):
    grep -l 'status: *not-done' ~/.claude/brief-inbox/*.review.md 2>/dev/null   # cards with a skipped piece
    grep -l 'status: *held'     ~/.claude/ledger/*.yml            2>/dev/null   # orc paused on a blocker
+   ls ~/.claude/brief-inbox/memo-watcher-*.md 2>/dev/null                      # watcher's process findings → MUST convert: numbered brief / spec / logged drop
    # THEN — the waiting counts:
    echo "$(ls ~/.claude/brief-inbox/*.review.md 2>/dev/null | wc -l) review cards · \
    $(ls ~/.claude/brief-inbox/*.brief.md 2>/dev/null | wc -l) open briefs · \
@@ -49,6 +50,12 @@ offer to spec it instead.
    your call). Then: 3 review cards · 6 open briefs · 2 stale claims." A not-done that's
    a weak descope ("deferred / wasn't sure") should never have shipped — treat it as
    unfinished work (corrective spec / back to orc), not something you quietly accept.
+   **Watcher memos are MANDATORY-triage, not optional reading.** Every
+   `~/.claude/brief-inbox/memo-watcher-*.md` MUST be converted this session into one of:
+   a numbered brief (`next-num --kind brief`), a spec, or an **explicit logged
+   drop-with-reason** — never left to sit. This is the non-building-role guarantee (the twin
+   of the corrective-inbox rule): a watcher finding becomes tracked work or a logged drop,
+   never an unnumbered orphan that dies on the lane (the `memo-133` failure mode).
 3. **Offer the menu** and let the user choose:
    - **Brainstorm** — something new, or develop a waiting brief.
    - **Intake/triage** — sort a raw dump into topics (the old planner, now a shape).

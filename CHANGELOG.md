@@ -8,6 +8,31 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.11.0] — 2026-06-21
+
+**Non-building roles (watcher) hardened — findings can't die untracked; self-audit
+discipline.** Two watcher self-audits surfaced gaps in how the standing process-reviewer
+operates. Folded both into the `watcher` skill (+ a matching `think` obligation):
+
+### Changed
+- `skills/watcher/SKILL.md`:
+  - **Re-verify own proposals (First-move step 3):** before sweeping, re-check every recent
+    proposal — grep for the guard it proposed, never trust the ACK/archive name. "ACK'd",
+    "routed", and "implemented+verified" are distinct; "closed" only when the guard is live.
+    (A watcher had reported a cron-interpreter finding "closed end-to-end" when it was only
+    parked — a hollow verification about its own work.)
+  - **Quota "session" defined:** one proposal per *context* (per `/clear`-boot), not per
+    sweep; chained sweeps share one quota, a relay resets it. Removes the "fresh session"
+    rationalization.
+  - **Signal integrity (step 4):** bless the signals the watcher actually uses (`git log`,
+    ledger render, relay-watch logs, `*-active` for pane resolution — never a hard-coded pane
+    id); demote `loop-observation/` to "only if fresh" (it had gone 10 days stale).
+  - **Lane fix + durable intake:** advisories go to `brief-inbox/memo-watcher-*` (canonical),
+    not `spec-inbox/`; a finding becomes a tracked numbered brief / spec / **logged drop** —
+    never an unnumbered orphan. The non-building-role twin of rev's corrective-inbox.
+- `skills/think/SKILL.md`: boot inventory lists `memo-watcher-*` as **mandatory-triage** —
+  every one is converted to a numbered brief / spec / logged drop, never left to sit.
+
 ## [3.10.0] — 2026-06-21
 
 **Relay canonicalized to baton-direct + an author-token guard.** The distributed
