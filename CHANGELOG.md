@@ -8,6 +8,23 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [3.9.0] — 2026-06-21
+
+**rev close-out gate for data-outcome criteria.** A criterion whose proof is a
+cron/pipeline/backfill/scheduled job has no rendered surface — the verifier can prove a
+page, never a job that runs later. rev had no rule for the class, so it closed such
+criteria on the commit/deploy. A 2026-06-18 daily price-snapshot cron fix was marked done
+while prod captured nothing for ~2 days (committed, never observed running). Originated as
+a watcher longitudinal candidate; picked up via `/think`.
+
+### Added
+- `skills/rev/SKILL.md` — "Data-outcome criteria — verify on OBSERVED prod data" gate:
+  CONFIRMED requires a dated count/freshness query showing the expected rows landed
+  at/after the next scheduled run; until then the criterion stays in
+  `Awaiting prod-verification` (a full scheduling interval there is correct, not a stall).
+  Because `accepted = shipped ∧ CONFIRMED`, holding the verdict keeps a cron/pipeline spec
+  from flipping `accepted` on deploy.
+
 ## [3.8.1] — 2026-06-21
 
 **Allocation poison-guard made relative (was a stale absolute ceiling).** The

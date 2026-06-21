@@ -57,6 +57,28 @@ For each spec in `Awaiting prod-verification`:
 - The compressed verdict to the operator: "N criteria, M prod-verified green; K
   needs-human: …" — not the raw card.
 
+### Data-outcome criteria — verify on OBSERVED prod data, not on commit/deploy/render
+
+Some criteria have no rendered surface to screenshot: a cron/scheduled job firing, a
+pipeline or backfill run, a data-freshness or row-accumulation guarantee. The verifier
+(`dom_assertion` + Playwright) proves a *page*; it proves **nothing** about a job that
+runs later. For this class the close-out test is different:
+
+- A green build, a merged commit, even a confirmed deploy are NOT proof — they show the
+  fix *exists*, not that prod *did the thing*. Closing such a criterion on the commit is
+  exactly how a 2026-06-18 cron fix (a daily price-snapshot job) was marked done while
+  prod captured nothing for ~2 days — the fix was committed but its first successful
+  scheduled run was never observed before close.
+- CONFIRMED requires a **direct observation that the expected data landed at/after the
+  job's next scheduled run** — a dated data query (count / freshness, e.g.
+  `SELECT <date_col>, COUNT(*) … GROUP BY 1 ORDER BY 1 DESC`) showing the new row(s),
+  recorded verbatim as the verdict `--evidence`.
+- Until that observation exists, **leave the criterion in `Awaiting prod-verification`
+  and re-check it on the next tick** — never write CONFIRMED from a render or a deploy. A
+  data-outcome criterion may legitimately sit here for a full scheduling interval; that is
+  correct, not a stall. (Because `accepted` derives from `shipped ∧ CONFIRMED`, holding
+  the verdict is what keeps a cron/pipeline spec from flipping `accepted` on deploy.)
+
 ## When the context watch fires
 
 The `REV CONTEXT WATCH` message is your relay signal: finish the current atomic
