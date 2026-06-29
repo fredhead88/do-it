@@ -8,6 +8,50 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [4.0.0] — 2026-06-29 — Parallel builders + lean integrator (spec 252)
+
+**Breaking role-split: parallel builders + lean integrator.** The `orc` singleton now
+divides into N parallel **builders** (each owns one spec end-to-end in its own worktree)
+feeding one lean **integrator** (the revised orc). This is the most significant structural
+change since DO-IT 2.0.0.
+
+### Added
+- **`builder` skill** (`skills/builder/SKILL.md`) — new bootable session. Parallel (N at
+  once); claims exactly ONE `.assigned` spec from the build lane via atomic rename; builds
+  in its own git worktree off the integrator's `base_sha`; runs the full close-out
+  evidence gate (blind, two verdicts, evidence-bound) IN ITS OWN WORKTREE; writes the
+  identity-stamped review card; pushes the branch; renames the lane file to `.ready`. A
+  builder never touches master, never deploys, never touches another spec's files.
+- **Build lane** (`<bus-root>/build-lane/`) — new `assigned → building → ready` message
+  lane between the integrator and the builder pool. Normative field names and lane suffixes
+  live in the contract section of DO-IT.md §4.
+- **`ready` ledger state** — new status a builder writes after self-gating. Sits between
+  `building` and `merged`; the integrator reads `.ready` lane files, runs the speculative
+  re-check against current master, then merges.
+- **`build-lane/` to `.gitignore`** — add `<bus-root>/build-lane/` (it is working state,
+  not code; same rule as the rest of the bus).
+
+### Changed
+- **`orc` → lean integrator** — the revised `orc` skill no longer builds. It reads ONLY
+  the ledger rows and build-lane files — never a build artifact, diff, or transcript. It
+  derives each spec's `writes:` footprint, assigns into the build lane off a frozen
+  `base_sha`, speculative-re-checks every `.ready` branch against current master, merges
+  WIP=1, deploys one at a time, and advances the ledger. `/orc` is preserved as an alias.
+- **Close-out gate moved orc → builder** — the blind two-verdict typed-evidence gate
+  (formerly run by orc after integration) now runs in the builder's own worktree before
+  the lane file reaches `.ready`. The integrator's role shrinks to speculative re-check +
+  merge.
+- **`DO-IT.md`** — version line updated to v4.0.0; §1 map and role descriptions
+  reflect the builder/integrator split; build lane added to CONFIG.
+- **`think` + `spec-handover` skills** — prerequisites updated to reference DO-IT.md §0
+  CONFIG table; think gains a fourth shape (review); descriptions updated for v4.
+
+### Breaking
+- A standalone orc session that builds in the shared working tree is no longer compliant.
+  The integrator never builds; all building happens in builder-owned worktrees.
+- The close-out gate now runs per-builder; a spec that ships without a builder review card
+  is a protocol violation.
+
 ## [3.11.0] — 2026-06-21
 
 **Non-building roles (watcher) hardened — findings can't die untracked; self-audit

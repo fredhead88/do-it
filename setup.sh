@@ -26,7 +26,7 @@ mkdir -p "$SKILLS_DST"
 for stale in planner handover drop memo collect; do
   if [ -L "$SKILLS_DST/$stale" ]; then rm -f "$SKILLS_DST/$stale"; echo "  removed stale link: $stale"; fi
 done
-for d in think spec-handover orc rev watcher verification-loop; do
+for d in think spec-handover orc builder rev watcher verification-loop; do
   ln -sfn "$SKILLS_SRC/$d" "$SKILLS_DST/$d"
   echo "  linked skill: $d"
 done
@@ -50,14 +50,14 @@ if ! crontab -l 2>/dev/null | grep -q relay-watch.sh; then
 fi
 
 # 4. CONFIG sanity check — refuse to claim "done" if placeholders remain
-PLACEHOLDERS=$(grep -nE '/path/to/your/repo' "$ROOT/DO-IT.md" || true)
+PLACEHOLDERS=$(grep -nE '<absolute path to your repo|<docs/do-it/|<the exact deploy' "$ROOT/DO-IT.md" || true)
 if [ -n "$PLACEHOLDERS" ]; then
   echo
-  echo "  ACTION NEEDED: edit the CONFIG block at the top of DO-IT.md."
+  echo "  ACTION NEEDED: fill in the CONFIG table at the top of DO-IT.md."
   echo "  Still on placeholder values:"
   echo "$PLACEHOLDERS" | sed 's/^/    /'
   echo
-  echo "  Set at least REPO_ROOT and INTENT_DOC before running orc."
+  echo "  Set at least Repo root, Ledger mirror, and Deploy recipe before running orc."
   exit 1
 fi
 
