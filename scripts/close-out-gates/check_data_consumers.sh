@@ -1,41 +1,44 @@
 #!/usr/bin/env bash
-# check_data_consumers.sh — cross-spec data-dependency derivation (reference impl).
+# check_data_consumers.sh — F9 cross-spec data-dependency derivation (ORC-RESET STEP 7).
 #
-# When a spec declares it `populates: <table>`, its close-out should re-verify the
-# SURFACES that CONSUME that table — not just its own criteria. In the reference
-# deployment a data spec shipped its table while a downstream panel went stale yet
-# read `shipped`. This derives the consumer set from the code (no hand-maintained
-# map): every router/lib that references the table, plus the routers that import a
-# referencing lib module (one hop).
-#
-# Tuned for a Python routers/lib split; override via env for your layout:
-#   CONSUMERS_ROUTERS_DIR   where request handlers live   (default below)
-#   CONSUMERS_LIB_DIR       shared library modules        (default below)
+# When a spec declares `populates: <table>`, its close-out must re-verify the SURFACES
+# that CONSUME that table — not just its own criteria. 126 shipped data; 125's consuming
+# panel went stale yet read `shipped`. This derives the consumer set from the code (no
+# hand-maintained map, per the audit): every router/lib that references the table, and —
+# for a lib hit — the routers that import that lib module (one hop).
 #
 # Usage:  check_data_consumers.sh <table_or_view_name>
-# Output: consuming handler files (DIRECT vs indirect), one per line, for the
-#         close-out to re-verify. Exit 0 always (a derivation, not a gate); empty
-#         output = no code consumer found (state that in the card).
+# Output: the consuming router files (→ their routes), one per line, for the close-out
+#         to re-verify. Exit 0 always (it's a derivation, not a gate); empty output =
+#         no code consumer found (state that in the card).
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 TABLE="${1:?usage: check_data_consumers.sh <table_name>}"
-RDIR="${CONSUMERS_ROUTERS_DIR:-api/app/routers}"
-LDIR="${CONSUMERS_LIB_DIR:-api/app/lib}"
+RDIR="api/app/routers"
+LDIR="api/app/lib"
 
+# direct references in routers
 mapfile -t direct_routers < <(grep -rlF --include="*.py" "$TABLE" "$RDIR" 2>/dev/null | sort -u)
 
+# references in lib → find routers importing that lib module (one hop)
 mapfile -t lib_hits < <(grep -rlF --include="*.py" "$TABLE" "$LDIR" 2>/dev/null | sort -u)
 indirect_routers=()
 for lib in "${lib_hits[@]}"; do
+  # api/app/lib/foo/bar.py -> module token "bar" and "foo.bar" for import matching
   base="$(basename "$lib" .py)"
+  rel="${lib#api/app/}"; mod="${rel%.py}"; mod="${mod//\//.}"   # app.lib.foo.bar
+  short="${mod#app.}"                                           # lib.foo.bar
   while IFS= read -r r; do indirect_routers+=("$r"); done < <(
-    grep -rlE --include="*.py" "import .*\b${base}\b|from .*\b${base}\b" "$RDIR" 2>/dev/null | sort -u
+    grep -rlE --include="*.py" "import .*\b${base}\b|from .*${short}\b|from .*\b${base}\b" "$RDIR" 2>/dev/null | sort -u
   )
 done
 
-_emit() {
+# Direct router refs are high-confidence consumers — re-verify ALL of these.
+# Indirect (via a shared lib) can be noisy when the lib is broadly imported, so
+# label them; the close-out re-verifies direct always, indirect by judgment.
+_emit() { # $1=file $2=confidence
   local f="$1" c="$2"
   local prefix; prefix="$(grep -m1 -oE 'prefix="[^"]*"' "$f" | sed 's/prefix="//;s/"//')"
   printf '%-8s %s    route_prefix=%s\n' "$c" "$f" "${prefix:-?}"

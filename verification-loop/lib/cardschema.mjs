@@ -46,3 +46,65 @@ export function criteriaFromCard(cardText) {
   }
   return { criteria, errors };
 }
+
+// ── Capture Provenance (R-D2 — per-criterion surface binding) ─────────────────
+//
+// Each evidence artifact written by the verifier must carry a `captured_surface`
+// (the page-map key used when capturing). The check below compares that recorded
+// surface to the criterion's declared surface (dom_assertion.page for ui criteria,
+// or criterion.surface for non-ui criteria).
+//
+// A mismatch means the artifact came from the WRONG page — the F4 scenario where
+// criteria 124/125/128 were judged against a neighbor spec's snapshot. Any such
+// mismatch fails the criterion and must never silently pass.
+
+/**
+ * Derive the declared surface for a criterion.
+ * For ui criteria the authoritative source is dom_assertion.page.
+ * For non-ui criteria, fall back to criterion.surface if present.
+ * Returns null if the criterion makes no surface declaration.
+ *
+ * @param {object} criterion
+ * @returns {string|null}
+ */
+export function declaredSurface(criterion) {
+  if (criterion.criterion_type === 'ui' && criterion.dom_assertion && criterion.dom_assertion.page) {
+    return criterion.dom_assertion.page;
+  }
+  return criterion.surface || null;
+}
+
+/**
+ * Check capture provenance: verify that an evidence artifact was captured from
+ * the criterion's own surface, not a neighbor's.
+ *
+ * @param {object} criterion   - the criterion being judged
+ * @param {object} artifact    - the parsed evidence JSON (must carry `captured_surface`)
+ * @returns {{ mismatch: boolean, declared: string|null, captured: string|null, reason: string }}
+ *
+ * A missing `captured_surface` in the artifact is treated as UNKNOWN (not a fail),
+ * because legacy artifacts predate this field. Only an explicit mismatch between two
+ * known values is flagged.
+ */
+export function checkCaptureProvenance(criterion, artifact) {
+  const declared = declaredSurface(criterion);
+  const captured = (artifact && typeof artifact.captured_surface === 'string')
+    ? artifact.captured_surface
+    : null;
+
+  // If either side is unknown, we cannot assert a mismatch — pass through.
+  if (!declared || !captured) {
+    return { mismatch: false, declared, captured, reason: 'provenance unknown (legacy artifact or no declared surface)' };
+  }
+
+  if (declared !== captured) {
+    return {
+      mismatch: true,
+      declared,
+      captured,
+      reason: `PROVENANCE MISMATCH: criterion declares surface "${declared}" but artifact was captured from "${captured}" — this is the F4 wrong-surface failure; verdict rejected`,
+    };
+  }
+
+  return { mismatch: false, declared, captured, reason: `provenance ok: both surfaces are "${declared}"` };
+}

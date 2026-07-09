@@ -1,30 +1,28 @@
 #!/usr/bin/env bash
-# check_nav_reachability.sh — orphan-nav pre-ship gate (reference implementation).
+# check_nav_reachability.sh — F3 orphan-nav pre-ship gate (ORC-RESET STEP 6).
 #
-# A surface can be built + populated yet ORPHANED: no sidebar link, reachable only
-# by typing the URL. In the reference deployment this recurred 4× before the gate
-# existed. Wire this into your close-out so it FAILS when a spec adds a NEW route
-# that nothing in your nav/sidebar links to.
+# A surface can be built + populated yet ORPHANED: no sidebar link, reachable
+# only by typing the URL. This recurred 4× (124, 125/127/128, 075). The close-out
+# must fail when a spec adds a NEW dashboard route that nothing in app-sidebar.tsx
+# links to.
 #
-# Tuned for a Next.js App Router layout out of the box; override the two paths via
-# env for any other framework that has (a) a file-routing dir and (b) a nav file:
-#   NAV_SIDEBAR   nav/sidebar source file to grep   (default below)
-#   NAV_APP_DIR   the file-routing root             (default below)
+# Deterministic rule: for every newly-added page.tsx between BASE and HEAD, derive
+# the route segments (dropping (route-groups) and [dynamic] params). Walk from the
+# LEAF upward to the first STATIC segment — that segment (the surface's own identity)
+# must be grep-able in app-sidebar.tsx. An ancestor prefix being linked is NOT enough.
+# A drill-down child (e.g. cash/[settlementId]) passes via its parent (`cash`, the
+# first static segment above the dynamic leaf); a brand-new top-level surface
+# (e.g. /stockout-risk) whose own segment isn't linked FAILS.
 #
-# Rule: for every newly-added page.tsx between BASE and HEAD, derive the route, walk
-# from the LEAF up to the first STATIC segment (the surface's own identity, dropping
-# (route-groups) and [dynamic] params), and require THAT segment to be grep-able in
-# the nav file. A drill-down child passes via its linked parent; a brand-new
-# top-level surface whose own segment isn't linked FAILS.
-#
-# Usage:  check_nav_reachability.sh [BASE_REF] [HEAD_REF]
-# Exit:   0 = every new route reachable (or none added); 1 = orphan(s) found.
+# Usage:   check_nav_reachability.sh [BASE_REF] [HEAD_REF]
+#   BASE_REF defaults to origin/master (fallback master), HEAD_REF to HEAD.
+# Exit:    0 = every new route reachable (or no new routes); 1 = orphan(s) found.
 set -uo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
-SIDEBAR="${NAV_SIDEBAR:-dashboard/src/components/app-sidebar.tsx}"
-APP_DIR="${NAV_APP_DIR:-dashboard/src/app}"
+SIDEBAR="dashboard/src/components/app-sidebar.tsx"
+APP_DIR="dashboard/src/app"
 
 BASE="${1:-}"
 HEAD_REF="${2:-HEAD}"
@@ -33,9 +31,10 @@ if [ -z "$BASE" ]; then
 fi
 
 if [ ! -f "$SIDEBAR" ]; then
-  echo "FAIL: nav file not found at $SIDEBAR (set NAV_SIDEBAR)"; exit 1
+  echo "FAIL: sidebar not found at $SIDEBAR"; exit 1
 fi
 
+# Newly-ADDED page.tsx files (status A) under the app dir.
 mapfile -t NEW_PAGES < <(git diff --name-only --diff-filter=A "$BASE" "$HEAD_REF" -- "$APP_DIR" 2>/dev/null | grep -E '/page\.tsx$' || true)
 
 if [ "${#NEW_PAGES[@]}" -eq 0 ]; then
@@ -44,9 +43,13 @@ fi
 
 orphans=()
 for p in "${NEW_PAGES[@]}"; do
+  # route = path under app dir, minus /page.tsx
   route="${p#"$APP_DIR"/}"; route="${route%/page.tsx}"
   reachable=0
+  # split into segments; a segment counts if static (not a (group) or [param])
   IFS='/' read -ra segs <<< "$route"
+  # walk from the LEAF upward; the first STATIC segment is the surface's own
+  # identity and must be grep-able. (group)/[param] segments are skipped.
   identity=""
   for (( i=${#segs[@]}-1; i>=0; i-- )); do
     s="${segs[$i]}"
@@ -62,7 +65,7 @@ done
 if [ "${#orphans[@]}" -gt 0 ]; then
   echo "FAIL: ${#orphans[@]} new route(s) ORPHANED — not grep-able in $SIDEBAR:"
   for o in "${orphans[@]}"; do echo "  ✗ $o"; done
-  echo "Add a nav link (or confirm it's a drill-down whose parent IS linked) before close-out."
+  echo "Add a sidebar link (or confirm it's a drill-down whose parent IS linked) before close-out."
   exit 1
 fi
 

@@ -58,7 +58,7 @@ Two handoffs are always on offer: **"hand the spec over?"** and **"send a memo?"
 Discovery, research, probing, converging on one approach.
 
 - **Developing a brief?** Claim it first: rename
-  `Bus root/brief-inbox/NNN-<slug>.brief.md` → `NNN-<slug>.brief.claimed.md` and add
+  `Bus root/brief-inbox/B<NNN>-<slug>.brief.md` → `B<NNN>-<slug>.brief.claimed.md` and add
   `claimed_at:` *before* working — so a thinker that dies mid-thought leaves a trace
   (surfaced as a stale claim).
 - **Diverge first.** Use the `brainstorming` skill if available. Explore multiple
@@ -104,17 +104,17 @@ the later thinking). Two outcomes per topic:
 
 - **Handle it now** → flip into Brainstorm for that topic in this session.
 - **Park it for later** → write a **lightweight brief**
-  `Bus root/brief-inbox/NNN-<slug>.brief.md` (allocate next `NNN`): just `topic:`,
+  `Bus root/brief-inbox/B<NNN>-<slug>.brief.md` (allocate next `B<NNN>`): just `topic:`,
   `problem:` (one paragraph — who hurts and how; the seed of the spec's `intent:`), and
   "develop later." No heavy schema, no approach. Then **park and point**: tell the user
-  "parked as brief NNN — open a fresh `/think` on it when you want." You never spawn a
+  "parked as brief B<NNN> — open a fresh `/think` on it when you want." You never spawn a
   session.
 
 **Dump account (the no-drop guarantee).** For a multi-item dump, end intake with a
 one-shot account — every source item lands in exactly one bucket:
 ```
 - "<item 1>"  → handled now (spec coming)
-- "<item 2>"  → parked as brief 007
+- "<item 2>"  → parked as brief B007
 - "<item 3>"  → merged into 007
 - "<item 4>"  → dropped (reason)
 ```
@@ -151,6 +151,17 @@ content, not the project. Follow existing specs as templates. Required structure
 - **Current state** — what exists today, real paths/surfaces, audited against code.
 - **Requirements** — each as Problem → Required behaviour → **Acceptance criteria**
   (verifiable) → User-facing effect → Severity. (Collect groups these by cluster.)
+  - **Type each acceptance criterion** so its evidence is judged correctly the first
+    time (spec 205): write `AC<n> [type]: …` where type is one of
+    `ui | backend | observed-data | financial | cron`. The four evidence rules the
+    handover gate enforces — write criteria that already satisfy them:
+    - **ui** — must be proved by a rendered/observed check, **not** by grep/rg/file-read.
+    - **observed-data** — evidence references a **live-DB (PG) test**, **never**
+      `sqlite:///` / a fixture / conftest.
+    - **cron / scheduled** — closed by a **post-fire row assertion** (a real row landed
+      after the schedule fired), **not** by a commit or code-path grep.
+    - **financial** — closed by a **cent-tolerance comparison** to the canonical value
+      (`abs(reported - canonical) <= 0.01`), **not** by self-attestation.
 - **Data model / API / surface** sections as needed.
 - **Invariants touched** — which Intent-doc (CONFIG) non-negotiables this respects.
 
@@ -179,6 +190,14 @@ criteria (the test). Orc's blind grader judges the shipped result against this s
 - [ ] Intent-doc (CONFIG) invariants it touches are named.
 - [ ] No open questions; any real fork resolved with the user.
 - [ ] No implementation plan / code leaked in.
+- [ ] **Criterion↔evidence validator passes.** Run it on the staged spec — **exit 0
+      required** before invoking `spec-handover` (this is the same gate handover runs at
+      its exit; running it *here* means criteria are correctly-typed the first time, not
+      reshaped at handover). Exit 2 (PG-less / untyped-prose WARN) proceeds, matching
+      handover semantics:
+      ```bash
+      python scripts/ci/handover_validate.py <Bus root>/spec-staging/<slug>-spec.md
+      ```
 
 ---
 
@@ -189,7 +208,7 @@ criteria (the test). Orc's blind grader judges the shipped result against this s
 The user's "build this" moment. Invoke **`spec-handover`** — it numbers the spec,
 places it in the bus, **and writes its `registered` ledger record**, atomically and
 self-verified (DO-IT.md §4). NO git. If you developed a brief, the spec carries
-`source_brief: NNN`. Then tell the user it's handed over and the spec id.
+`source_brief: B<NNN>`. Then tell the user it's handed over and the spec id.
 
 ### Send a memo → the orchestrator *or* a future intake session
 

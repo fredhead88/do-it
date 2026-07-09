@@ -1,13 +1,12 @@
 # Verification Loop — Setup
 
-This document covers a fresh-box setup from scratch.
+This document covers a fresh-box setup from scratch. On the current Hetzner box, all of these steps are already done. Read this when provisioning a new box or debugging a broken setup.
 
 ---
 
 ## 1. google-chrome-stable (.deb recipe)
 
-The harness uses `channel: 'chrome'` in Playwright, which requires `google-chrome-stable`
-(not Chromium). The standard `apt install chromium-browser` won't work.
+The harness uses `channel: 'chrome'` in Playwright, which requires `google-chrome-stable` (not Chromium). The standard `apt install chromium-browser` won't work.
 
 ```bash
 # One-time key + repo setup
@@ -27,67 +26,67 @@ which google-chrome-stable
 # Expected: /usr/bin/google-chrome-stable
 ```
 
-### Wedged dpkg lock
+### Wedged dpkg lock (the yak-shave that burned 30 minutes)
 
-If `apt install` hangs with "waiting for dpkg lock", do NOT kill apt or dpkg — that
-corrupts the package DB. Find and kill only the blocking `needrestart` hook:
+If `apt install` hangs with "waiting for dpkg lock", do NOT kill apt or dpkg — that corrupts the package DB. Instead, find and kill only the hanging `needrestart` hook:
 
 ```bash
+# Find the culprit
 ps aux | grep needrestart
+
+# Kill only the needrestart process (not apt/dpkg)
 kill <needrestart-pid>
+
 # apt will then continue normally
 ```
+
+Never `kill -9 apt` or `kill -9 dpkg` — always kill only the blocked post-install hook.
 
 ---
 
 ## 2. npm install
 
 ```bash
-cd path/to/do-it/verification-loop
+cd ~/.claude/verification-loop
 npm install
-# Installs playwright ^1.60.0 (no system browser download needed — chrome is already installed)
+# This installs playwright ^1.60.0 (no system browser download needed — chrome is already installed)
 ```
 
 ---
 
-## 3. Config file
+## 3. Required credentials (from `<repo root>/.env`)
 
-Copy `config/example.json` to `config/<your-project>.json` and fill in your values.
-See `config/README.md` for field documentation.
+The harness reads these environment variables. They must be set before running any tick.
 
----
+| Var | Description |
+|-----|-------------|
+| `VERIFIER_USER` | Email for the verifier test account (`verifier@albertscott.com`) |
+| `VERIFIER_PASS` | Password for the verifier test account |
+| `API_KEY` | Bearer token for the AS backend API |
 
-## 4. Required credentials
-
-The harness reads these from the environment. Names are configurable via the config
-file (see `config/README.md`). Source them before running:
+These are already in `<repo root>/.env` on the Hetzner box. Source them before running:
 
 ```bash
-export VERIFIER_USER=verifier@your-app.example.com
-export VERIFIER_PASS=<password>
-export API_KEY=<bearer-token>
-
-# Or source from your project's .env:
-set -a; source /path/to/your/.env; set +a
+set -a; source <repo root>/.env; set +a
+node ~/.claude/verification-loop/tick.mjs --dry-run
 ```
 
-The verifier account should be read-only, provisioned specifically for this harness.
-Session TTL is 7 days — the harness re-acquires `storageState` once per calendar day.
+The verifier account (`verifier@albertscott.com`) is provisioned in `AUTH_USERS_JSON` on the Vercel frontend project. It is read-only. Session TTL is 7 days — the harness re-acquires `storageState` once per calendar day, not on a timer.
 
 ---
 
-## 5. Selfcheck
+## 4. Selfcheck
 
 Run this after setup to confirm everything is wired:
 
 ```bash
-set -a; source /path/to/your/.env; set +a
+set -a; source <repo root>/.env; set +a
 node -e "
 import('./lib/selfcheck.mjs').then(async m => {
-  const cfg = (await import('./lib/config.mjs')).loadConfig('your-project');
-  const fs = (await import('node:fs')).default;
-  const r = m.selfcheck(cfg, process.env, fs);
-  console.log(r.ok ? 'SELFCHECK OK' : 'FAIL: ' + r.failures.join('; '));
+  import('./lib/config.mjs').then(cfg => {
+    const r = m.selfcheck(cfg.loadConfig(), process.env, (await import('node:fs')).default);
+    console.log(r.ok ? 'SELFCHECK OK' : 'FAIL: ' + r.failures.join('; '));
+  });
 });
 "
 ```
@@ -96,14 +95,13 @@ Expected: `SELFCHECK OK`
 
 ---
 
-## 6. Cron line (cost-aware tick)
+## 5. Cron line (cost-aware tick)
 
-The tick is cheap on idle ticks (no new sha → no browser spun). A 30-minute cadence
-catches ships within half an hour.
+The tick is designed to be cheap on idle ticks (no new sha → no browser spin). A 30-minute cadence catches ships within half an hour.
 
 ```cron
-*/30 * * * * <user> set -a; source /path/to/your/.env; set +a; \
-  node /path/to/do-it/verification-loop/tick.mjs --config <your-project> >> /tmp/vloop.log 2>&1
+*/30 * * * * root set -a; source <repo root>/.env; set +a; \
+  node /home/albert/.claude/verification-loop/tick.mjs >> /tmp/vloop.log 2>&1
 ```
 
 Add to `/etc/cron.d/verification-loop`:
@@ -112,7 +110,7 @@ Add to `/etc/cron.d/verification-loop`:
 cat > /etc/cron.d/verification-loop << 'EOF'
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
-*/30 * * * * <user> set -a; source /path/to/your/.env; set +a; node /path/to/do-it/verification-loop/tick.mjs --config <your-project> >> /tmp/vloop.log 2>&1
+*/30 * * * * root set -a; source <repo root>/.env; set +a; node /home/albert/.claude/verification-loop/tick.mjs >> /tmp/vloop.log 2>&1
 EOF
 chmod 644 /etc/cron.d/verification-loop
 ```
@@ -120,46 +118,37 @@ chmod 644 /etc/cron.d/verification-loop
 ### Smoke-test before enabling cron
 
 ```bash
-set -a; source /path/to/your/.env; set +a
+set -a; source <repo root>/.env; set +a
 
 # 1. Dry-run — observes but writes nothing
-node /path/to/do-it/verification-loop/tick.mjs --config <your-project> --dry-run --force
+node /home/albert/.claude/verification-loop/tick.mjs --dry-run --force
 
 # 2. Single-spec single-criterion smoke test (fast, <60s)
-node /path/to/do-it/verification-loop/tick.mjs \
-  --config <your-project> \
-  --spec <NNN-slug> \
+node /home/albert/.claude/verification-loop/tick.mjs \
+  --spec 064-asin-page-unmapped-asin-blank \
   --criterion "returns 200" \
   --force
 ```
 
 ---
 
-## 7. Key paths
+## 6. Key paths
 
 | Path | Purpose |
 |------|---------|
-| `verification-loop/` | Harness root |
-| `verification-loop/config/<project>.json` | Project-specific config |
-| `verification-loop/runs/<date>/` | Per-day run artifacts |
-| `verification-loop/runs/<date>/PROGRESS.jsonl` | Tick event log |
-| `verification-loop/runs/<date>/VERIFICATION-LEDGER.jsonl` | Per-criterion verdicts |
-| `verification-loop/runs/<date>/NEEDS-HUMAN.jsonl` | Escalations requiring human review |
+| `~/.claude/verification-loop/` | Harness root |
+| `~/.claude/verification-loop/config/<your-project>.json` | AS-specific config |
+| `~/.claude/verification-loop/runs/<date>/` | Per-day run artifacts |
+| `~/.claude/verification-loop/runs/<date>/PROGRESS.jsonl` | Tick event log |
+| `~/.claude/verification-loop/runs/<date>/VERIFICATION-LEDGER.jsonl` | Per-criterion verdicts |
+| `~/.claude/verification-loop/runs/<date>/NEEDS-EPHRAIM.jsonl` | Escalations |
 | `~/.claude/ledger/verified/` | Verifier-owned verdict namespace (builder can't write here) |
 | `/tmp/vloop.log` | Cron tick stdout log |
 
 ---
 
-## 8. Memory / swap notes
+## 7. Notes on the memory/swap (Hetzner)
 
-Playwright (headless Chrome) uses ~200–400MB per browser instance. On constrained
-boxes (2–4GB RAM), add swap before running:
+The box had zero swap before 2026-06-03; heavy Python pipelines caused OOM-killed tmux sessions. 16GB swap was added. Playwright (headless Chrome) itself is ~200–400MB per browser instance — fine on a 4GB box. The harness closes the browser after each probe call.
 
-```bash
-# 4GB swap (adjust size as needed)
-fallocate -l 4G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
-echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
-```
-
-If a tick is OOM-killed mid-run, it resumes safely on the next tick
-(reads `PROGRESS.jsonl` to skip already-CONFIRMED criteria).
+If a tick is OOM-killed mid-run, it resumes safely on the next tick (reads `PROGRESS.jsonl` to skip already-CONFIRMED criteria).

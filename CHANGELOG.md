@@ -8,6 +8,73 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [4.7.0] — 2026-07-09 — Gating, standing-role liveness, and close-out hardening
+
+Consolidated release bringing the distro current with live (folds the never-cut
+4.1–4.6). **45 DO-IT-system specs** since 4.0.0 — additive + hardening; no role
+contract removed or renamed, so a minor bump. Headline: the `.gating` lifecycle
+state and its detached grader; a full standing-role liveness layer; and a rebuilt,
+environment-faithful close-out pipeline.
+
+**Config note:** the bus root default is now `~/.claude/` (machine-global). The
+parallel-builder model (4.0.0) needs a bus shared across worktrees, so a repo-relative
+`.do-it/` bus only fits a single-integrator setup. CONFIG §0 documents both.
+
+### Added
+- **`.gating` lifecycle state** (spec 300) — a pane-independent detached grader
+  (`scripts/gating-watch.sh`) checks a builder's pushed branch from a fresh checkout
+  at `ready_sha` and writes the verdict; builders free at push instead of blocking.
+  New status between `building` and `ready`.
+- **Standing-role liveness machinery** (256/279/297/298/315/363/400/401) —
+  `scripts/standing-role-heartbeat.sh`, `watcher_sweep_liveness.sh`,
+  `builder_lifecycle_reconcile.sh`: heartbeats key on real progress, not pane
+  existence; sentinel self-heal treats tmux as ground truth.
+- **Per-role nudge** (278/281/287/299/301/319/348) — `scripts/doit-nudge.sh` pokes an
+  idle role pane when its lane has unconsumed work; presence-aware; consume-once +
+  forged-baton quarantine. See `scripts/CRON-SETUP.md`.
+- **Handover criterion↔evidence validator** (285) — `scripts/ci/handover_validate.py`
+  enforces typed acceptance-criteria evidence rules; shifted left into `think`.
+- **Thinker bus-first isolation** (253) — `scripts/ci/check_thinker_isolation.sh`.
+- **`operator-ops` ephemeral role** (399) — runs exactly one prod data mutation and
+  dies. Documented in DO-IT.md; no standalone skill yet.
+- **Close-out grader internals** — `builder_closeout_check.py`,
+  `builder_closeout_verdict.py`, `orc_deploy_verdict.py`, `migration_lint.py`,
+  `scripts/lib/pane_send.sh`; verifier modules `rejectgate.mjs` / `revprobe.mjs`; new
+  ledger/gating/verify/close-out test suites.
+- **`scripts/CRON-SETUP.md`** — the standing cron lines (nudge/gating/heartbeat/
+  reconcile/sweep), genericized with `REPO_ROOT`/`PYTHON`/`BUS_ROOT` overrides.
+
+### Changed
+- **Ledger truthfulness + state model** (282/402) — real states, stale-field lint,
+  verified-reconcile; the aggregator can't derive CONFIRMED from a partial map.
+- **Close-out gate rebuilt** (283/294/296/308/357/404/426) — runs in a dispatched
+  sub-agent against the real environment (not a clean worktree); third `owed-data`
+  verdict stops live-PG ACs false-failing; malformed lane files escalate instead of
+  bouncing a good branch.
+- **Lean integrator** (284/286/398/406/407/408) — actual-diff conflict footprints,
+  migration-head reconciliation at merge, deploy coalescing (WIP=1 governs merge only).
+- **Builder fan-out enforcement + post-ship recycle** (288/369/299).
+- **Relay** canonicalized to baton-direct with author-token guard; `relay-watch.sh`
+  rewritten (+418 lines).
+- Role skills and `DO-IT.md` updated throughout; "orc" terminology → "integrator"
+  (`orc` remains an alias). Version header → 4.7.0.
+
+### Fixed
+- Relay-watch runs as the correct user so it can see builder panes (293); root-owned
+  heartbeat log no longer silently breaks watcher cron (363); Codex-skeptic /tmp leak
+  bounded (397).
+
+### Removed
+- Superseded standalone tests (`test_next_num`, `test_number_allocation`,
+  `test_needs_human_projection`, `test_review_loop_v2`) — consolidated into
+  `test_spec_ledger*.py`.
+
+### Notes
+- The 7 deploy-time gates (280/361/362/397/407/408/427) live in the project's own
+  `deploy.sh`, which this distro does not ship; the portable close-out gate
+  (`scripts/close-out-gates/write_deploy_manifest.sh`) is included as a reference
+  template to adapt.
+
 ## [4.0.0] — 2026-06-29 — Parallel builders + lean integrator (spec 252)
 
 **Breaking role-split: parallel builders + lean integrator.** The `orc` singleton now

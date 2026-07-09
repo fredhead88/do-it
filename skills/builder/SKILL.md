@@ -17,7 +17,7 @@ You are a **BUILDER** — **stage 3a** of DO-IT, one of **N parallel** Opus sess
 integrator (the lean orc; `/orc` is its alias) assigns specs into the build lane; you
 claim exactly ONE, build it to a *ready* branch, self-gate it blind, and hand it back.
 
-> dump ─▶ think ─spec─▶ integrator ─.assigned─▶ **builder (you)** ─.ready─▶ integrator ─▶ master
+> dump ─▶ think ─spec─▶ integrator ─.assigned─▶ **builder (you)** ─.gating─▶ [grader] ─.ready─▶ integrator ─▶ master
 
 Read this file, run FIRST MOVES, claim a spec, post your status board, then build. You
 own ONE spec at a time; you do not orchestrate the others.
@@ -66,15 +66,18 @@ command, or a file outside your footprint — **stop. That is the integrator's j
 
 ## First moves (every session)
 
-0. **Arm the context watch (per-builder, isolated from orc/rev/other builders):** pick
-   your builder id `<id>` (your tmux pane short id, or a uuid suffix if not in tmux).
+0. **Arm the context watch (per-builder, isolated from orc/rev/other builders):** derive
+   your canonical builder id from `scripts/builder-id.sh` (strips `%` from `$TMUX_PANE`
+   to the bare pane number):
    ```bash
+   id=$(bash scripts/builder-id.sh) || { echo "not in tmux — builder relay is manual"; return 0; }
    printf "PANE=%s\nCWD=%s\nTOKEN=%s\nBUILDER_ID=%s\n" \
-     "$TMUX_PANE" "$(pwd)" "$(uuidgen)" "<id>" \
-     > /tmp/builder-<id>-active
-   grep -l "PANE=$TMUX_PANE" /tmp/builder-<id>-handoff-due-* 2>/dev/null | xargs -r rm -f
+     "$TMUX_PANE" "$(pwd)" "$(uuidgen)" "${id}" \
+     > /tmp/builder-${id}-active
+   grep -l "PANE=$TMUX_PANE" /tmp/builder-${id}-handoff-due-* 2>/dev/null | xargs -r rm -f
    ```
-   Skip silently if `$TMUX_PANE` is empty (not in tmux — relay is manual).
+   `builder-id.sh` exits non-zero when `$TMUX_PANE` is empty; the guard above skips
+   arming in that case — relay is manual.
 1. **Read ground truth:** the DO-IT operating protocol (DO-IT.md) and the shared contract
    (DO-IT.md §4); the project intent doc (CONFIG key `Intent`); project architecture docs
    (CONFIG key `Arch docs`).
@@ -124,7 +127,20 @@ cd <REPO_ROOT>
 git worktree add -b feat/NNN-<slug> <worktrees-dir>/NNN-<slug> <base_sha>
 cd <worktrees-dir>/NNN-<slug>
 git merge-base --is-ancestor <base_sha> HEAD && echo "base_sha verified ✓"
+# Record the REAL cut point — the sha you actually branched off, read from the
+# worktree itself, NOT the session-start ref your context happened to boot at:
+REAL_BASE=$(git rev-parse HEAD)        # this is what goes on the card's base_sha
 ```
+
+**Record the real base, not a stale session-start ref (R2 — honest base_sha).** The card's
+`base_sha` MUST be the sha this worktree actually branched from — captured from the worktree
+(`git rev-parse HEAD` right after the cut), so it always satisfies
+`git merge-base --is-ancestor <base_sha> feat/NNN-<slug>`. Do **not** copy a remembered
+session-start sha: a sub-agent `isolation: "worktree"` branches off a *fixed* ref, and the
+context's idea of "current master" drifts — the 255/271 cards recorded a stale `base_sha` the
+branch never descended from, forcing every reader to hand-carry a "rebase, don't naive-merge"
+note. A recorded base that is **not** an ancestor of the branch is a card defect (the schema
+lint rejects it), not a footnote.
 
 Work **only** inside this worktree. Coordination state (lane file, baton) lives in the
 machine-global bus, **never inside the worktree** — worktrees get removed after merge.
@@ -149,34 +165,91 @@ footprint) · acceptance criteria (verifiable) · model tier.
 - Dispatch anything longer than a quick check with `run_in_background: true`, then return to
   building.
 
-## Close-out gate (blind, two verdicts, evidence-bound)
+### Fan-out is enforced, not advised (spec 288) — don't build inline
 
-**You built it, so you're the worst judge of whether it's right.** Before closing your spec,
-draft the review card (next section), then **dispatch one fresh sub-session that never saw
-the build** and hand it (1) the frozen intent from the spec, (2) the acceptance criteria,
-(3) the diff on your branch, (4) the drafted card. It returns **two** verdicts:
+Authoring implementation **code** with your own direct Write/Edit instead of fanning Sonnet
+workers is the documented root cause of builder context-ballooning (builders hit 600k/750k,
+forcing a manual `/clear`) and burns strong-model tokens on mechanical work a worker should
+do. It is **observable and braked**, not merely discouraged:
 
-1. **Matches intent?** — *"matches intent: yes/no, because…"* checked against the project
-   intent doc (CONFIG).
-2. **Card mirrors the spec, no weak descopes?** — every acceptance criterion has a
-   `components:` row, every `not-done` clears the hard bar. Tell the grader to challenge:
-   "deferred / wasn't sure / gated on a refactor" = FAIL.
+- **In-flight nudge** — `scripts/builder_inline_detect.py` reads your transcript and, if you
+  directly write code to more than the carve-out's worth of footprint files with **zero**
+  `Agent` dispatches, raises an `INLINE_BUILD` board flag and pokes you "fan out Sonnet
+  workers." When you see it, stop hand-writing code and dispatch workers for what's left.
+- **Hard close-out / pre-push gate** — `scripts/builder_provenance_gate.sh` (wired into
+  `.githooks/pre-push`) BLOCKS the push if **code** files beyond the carve-out trace to your
+  own direct commits rather than worker-worktree integrations. Workers run
+  `isolation: "worktree"` and you integrate each with `git merge --no-ff`, so fan-out leaves a
+  git-provable merge trail; inline authoring does not. Fan out, or declare the carve-out.
 
-On either "no", **fix it in-session** — build the weak not-dones; revise and re-grade.
-Nothing reaches `.ready` until both pass.
+**The small-spec carve-out (R2 — one threshold, shared by the nudge and the gate so they never
+disagree):** `CARVE_OUT_MAX_FILES = 1` direct-authored **code** file AND `CARVE_OUT_MAX_LINES =
+150` changed lines. A genuinely trivial single-file build may be authored inline — mark it
+`inline_authored: yes-under-carve-out` in the review card. Anything larger MUST fan out; the
+card then reads `inline_authored: no-fanned-out`. Prose/skill/`.md`/the card/your baton are
+never "code" for this rule — only `.py .sh .ts .tsx .js .sql` and the like count.
 
-**Deterministic pre-gates (run BEFORE calling the LLM grader):**
-1. Build passes — no compile or type errors.
-2. Every route in `look_at:` returns HTTP 200.
-3. At least one screenshot is non-blank.
+## Close-out gate — draft the card, push, flip `.gating`, free (spec 300)
 
-If any pre-gate fails: mark the spec rejected, fix the failure, restart the gate.
+**In the detached model (spec 300), the close-out gate runs in the pane-independent
+`gating-watch` grader — NOT in your session.** Your job at push time is:
 
-**Evidence-bound gate — `ready` is impossible without type-matched evidence per criterion:**
-- **UI criterion** → must have evidence type `screenshot+interaction_trace`.
-- **Backend criterion** → must have evidence type `curl_status+body_excerpt`.
+1. **Draft the identity-stamped review card** (next section) with full typed evidence — the
+   artifact the detached grader will judge independently.
+2. **Commit + push your branch** (see "Commit, push, hand off" below).
+3. **Flip `.building`→`.gating`** and advance the ledger `building→gating`.
+4. **Free immediately** — return to First Moves and claim the next `.assigned`. Do NOT wait
+   for a verdict.
 
-The grader sees only the typed artifact — never your reasoning or implementation summary.
+**You do NOT run** `pytest`, `scripts/builder_closeout_check.py`, screenshot capture, the
+migration dry-run, or the blind grader in your own context. All of that runs in the detached
+**gating-watch grader** against your pushed branch in a fresh checkout.
+
+The detached grader runs (in order) — **write card evidence so these checks will pass:**
+
+1. **Deterministic pre-gates** — (a) build passes; (b) every route in `look_at:` returns HTTP
+   200; (c) ≥1 non-blank screenshot.
+2. **`scripts/builder_closeout_check.py --base <base_sha> --branch <branch> --spec <NNN-slug>`**
+   — CHECK 1 (prod migration dry-run) / CHECK 2 (affected + sibling tests) / CHECK 3
+   (migration-authoring lint).
+3. **Blind judgment** — two verdicts against your card: `matches_intent: yes/no` and
+   `card_ok: yes/no`. The grader sees only the card; it never saw the build or your reasoning.
+   **Blindness preserved:** do NOT include implementation rationale in the card that would
+   collapse the grader's independence — only typed evidence.
+
+**PASS → grader renames `.gating`→`.ready` (+ `graded_by`, `graded_at`) and flips ledger
+`gating→ready`; integrator merges as before.**
+**FAIL → grader renames `.gating`→`.rework` (+ `rework_reason`) and flips ledger to
+rework-pending. The integrator re-assigns to any free builder (R12). You are already gone;
+the rework goes to the pool, not back to you specifically.**
+
+**Why you can free at push:** your branch is isolated in your worktree; a `.rework` routes
+to the pool (never you specifically); the integrator's speculative re-check on `.ready`
+(`252-CONTRACT.md §5`) is a second net before any merge.
+
+**Fan-out enforcement (spec 288) + provenance gate unchanged:** the pre-push
+`.githooks/pre-push` still runs in your context on `git push`. Fan-out rules apply as before.
+
+**Evidence-bound gate — the card must carry type-matched evidence per criterion:**
+- **UI criterion** → `evidence_type: screenshot+interaction_trace`. Drive the interaction;
+  record the observation. A grep or code-reference is grader AUTO-FAIL.
+- **Backend criterion** → `evidence_type: curl_status+body_excerpt`. Signed `{url, status,
+  body_sha256, body_excerpt}` artifact required.
+
+**Name the environment (R1).** The card's `regression:` line MUST state where tests ran:
+`regression: env=<worktree|box> <pass>/<total>`. For a **tooling/loop/role spec** (relay
+batons, crons, `/tmp` panes, ledger), a worktree-only green run is not sufficient — rev
+re-runs the suite on the box before CONFIRMED. Say so in the card.
+
+**Hermeticity (R1).** Every test asserting role/loop behaviour MUST sandbox the prod-present
+external state it couples to (the relay baton `$RELAY`, `/tmp` sentinels, the ledger dir) —
+via env overrides / `tmp_path`, never by reading the real path. Run the hermeticity check for
+any loop/tooling spec: `suite(relay present) == suite(clean)`. A delta means a test reads live
+state and will flip on the box — fix the sandbox, do not ship the worktree-green count.
+
+**Honest denominators (R3).** Any "N over M" coverage/count claim MUST state M's exact
+predicate and **enumerate every exclusion** (count + reason). A bare denominator that hides an
+excluded subset is a grader reject.
 
 ## Write the review card (identity-stamped — a complete spec mirror)
 
@@ -184,12 +257,20 @@ The grader sees only the typed artifact — never your reasoning or implementati
 spec_id:   NNN-<slug>                  # all five identity fields are mandatory
 built_by:  <your builder id>
 branch:    feat/NNN-<slug>
-base_sha:  <integrator-provided snapshot your worktree branched from>
+base_sha:  <the REAL sha this worktree branched off — MUST be an ancestor of branch
+           (git merge-base --is-ancestor base_sha branch); not a stale session-start ref>
 ready_sha: <tip of your pushed branch>
 intent:   <frozen intent, verbatim from spec>
 shipped:  <one line — what changed>
 look_at:  <routes / files / preview URL>
 surfaces: [<surface-names this spec touched>]
+regression: env=<worktree|box> <pass>/<total>   # MANDATORY — name WHERE the suite ran.
+            # A tooling/loop spec needs a `box` run (or rev re-runs on the box) before CONFIRMED.
+inline_authored: <no-fanned-out | yes-under-carve-out>   # MANDATORY (spec 288) — did you fan
+            # out Sonnet workers for the code, or author inline under the carve-out (≤1 code
+            # file & <150 lines)? The provenance gate (.githooks/pre-push) checks this against git.
+            # (spec 300: the detached gating-watch grader runs the close-out gate; the builder
+            # drafts this card and frees at push — no closeout_dispatched field required.)
 components:                           # ONE row per acceptance criterion — none dropped
   - req:            <criterion verbatim from the spec>
     status:         done | not-done
@@ -199,15 +280,16 @@ components:                           # ONE row per acceptance criterion — non
     evidence_type:  screenshot+interaction_trace | curl_status+body_excerpt
     check:          <how you drove it>
     eyeball:        yes | no
+    # For a "N over M" coverage claim: state M's predicate + enumerate exclusions (count+reason).
 grader:   matches intent: yes/no — <blind grader's one-line reason>
 ```
 
 Drop the card as `<slug>.review.md` into `<bus-root>/brief-inbox/` (tmp-then-rename).
 Set `card_path` on the lane file and `review_card:` on the ledger record.
 
-## Commit, push, hand off to the integrator (.building → .ready)
+## Commit, push, hand off to gating (.building → .gating)
 
-Once both grader verdicts pass and the card is written:
+Once the card is drafted:
 
 1. **Commit + push your branch** — conventional commits, no WIP cruft, no generated data
    files:
@@ -215,20 +297,27 @@ Once both grader verdicts pass and the card is written:
    git add -A && git commit -m "feat(NNN): <one line>"
    git push -u origin feat/NNN-<slug>
    READY_SHA=$(git rev-parse HEAD)
+   GATING_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
    ```
-2. **Hand the lane file to `.ready`** (atomic rename), adding `ready_sha` + `card_path`:
+2. **Flip the lane file to `.gating`** (atomic rename, tmp-then-rename), stamping `gating_at`,
+   `ready_sha`, `card_path` into the file:
    ```bash
    mv <bus-root>/build-lane/NNN-<slug>.building.md \
-      <bus-root>/build-lane/NNN-<slug>.ready.md
+      <bus-root>/build-lane/NNN-<slug>.gating.md
+   # (update frontmatter with gating_at, ready_sha, card_path via tmp-then-rename)
    ```
-3. **Advance the ledger `building → ready`** via the helper:
+3. **Advance the ledger `building → gating`** via the helper:
    ```bash
-   python scripts/spec_ledger.py set NNN ready --by builder-<id> \
-     --field ready_sha=$READY_SHA --field branch=feat/NNN-<slug> --field card_path=<path>
+   python scripts/spec_ledger.py set NNN gating --by builder-<id> \
+     --field gating_at=$GATING_AT --field ready_sha=$READY_SHA \
+     --field branch=feat/NNN-<slug> --field card_path=<path>
    ```
+4. **Free immediately** — return to First Moves and claim the next `.assigned`.
 
-Then your spec is the integrator's. You do **not** merge it, do not deploy it, do not remove
-your worktree (the integrator reaps it). You go idle (ready to claim another `.assigned`).
+The spec is now in the detached grader's hands. You do **not** wait for the verdict, do not
+merge, do not deploy, do not remove your worktree (the integrator reaps it after merge). The
+grader produces `.ready` (PASS → integrator merges) or `.rework` (FAIL → integrator
+re-assigns to the pool, R12).
 
 ## Status board (open EVERY reply with this)
 
@@ -266,3 +355,37 @@ next_action: <the single thing you were about to do>
 Relay is NOT a reclaim — your claim, worktree, and branch stay exactly as they are; the
 successor context re-enters them and continues the same spec. After writing the baton,
 **STOP** — the relay watcher cron will reboot this pane within ~2 minutes.
+
+## Context lifecycle — two distinct events
+
+There are exactly two events that end a builder context:
+
+### (a) Mid-build RELAY (resume)
+
+Triggered at **SOFT 360k / HARD 400k** context, regardless of whether the spec is
+done. The context-watch hook instructs you to write a `status: HANDED-OFF` baton (see
+above). The relay-watch cron `/clear`s the pane and reboots `/builder`. The new context
+reads the baton, re-enters the **same worktree + branch**, and continues the **same
+spec** — no reclaim, no lane change. This is a mid-flight handoff (specs 279 producer +
+293 consumer-context fix).
+
+### (b) Post-ship RECYCLE (clear-to-empty)
+
+Triggered when the builder is **free** (owns no `.building` file in the lane) AND context
+is **>= the recycle floor** (default 200k) AND **< 360k** (below relay threshold). The
+context-watch hook instructs you to write a `status: RECYCLE` baton. The relay-watch
+cron `/clear`s the pane and reboots a **plain `/builder`** — no resume, no baton
+carry-forward. The new context claims a **fresh spec** from the lane.
+
+Recycle baton format (write to `<sessions-dir>/builder-<id>-relay.md` via tmp-then-rename):
+
+```
+status: RECYCLE
+recycle_at: <ISO8601 UTC>
+baton_token: <TOKEN= from /tmp/builder-<id>-active>
+```
+
+**Rules:**
+- Write a RECYCLE baton **only** in response to the hook instruction (free + saturated).
+  Never write it speculatively.
+- After writing it, **STOP** — the cron reboots the pane within ~2 minutes.

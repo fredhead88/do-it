@@ -42,11 +42,17 @@ else
   echo "  Then: cd verification-loop && npm install"
 fi
 
-# 3b. Relay-watch: optional automated orc baton loop (hook + cron, manual install)
+# 3b. Executable bits for scripts + CI validators
+chmod +x "$ROOT"/scripts/*.sh "$ROOT"/scripts/*.py "$ROOT"/scripts/ci/*.sh "$ROOT"/scripts/ci/*.py \
+         "$ROOT"/scripts/lib/*.sh "$ROOT"/relay-watch/*.sh "$ROOT"/scripts/close-out-gates/*.sh 2>/dev/null || true
+echo "  made scripts/ + relay-watch/ executable (incl. ci/ validators)"
+
+# 3c. Standing-role automation: relay + nudge + gating-watch + heartbeat (optional cron)
 if ! crontab -l 2>/dev/null | grep -q relay-watch.sh; then
   echo
-  echo "  OPTIONAL: relay-watch (automated orc handoff/restart) is not installed."
-  echo "  See relay-watch/SETUP.md — one settings.json hook entry + one cron line."
+  echo "  OPTIONAL: standing-role automation (relay/nudge/gating-watch/heartbeat) is not installed."
+  echo "  Relay hook: relay-watch/SETUP.md (one settings.json hook + cron line)."
+  echo "  Cron block: scripts/CRON-SETUP.md (nudge, detached grader, liveness — REPO_ROOT/PYTHON overridable)."
 fi
 
 # 4. CONFIG sanity check — refuse to claim "done" if placeholders remain

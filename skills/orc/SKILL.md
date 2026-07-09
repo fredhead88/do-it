@@ -68,7 +68,7 @@ confirm → advance the ledger → keep the git tree and intent/architecture doc
 2. **Pick up the relay baton** if the relay doc (CONFIG) is `HANDED-OFF`: reconcile against
    the filesystem — the baton is a hint, the tree is the truth. **List ALL live builders +
    their lane files**, not just whatever the baton names:
-   `ls <bus-root>/build-lane/*.building.md <bus-root>/build-lane/*.ready.md 2>/dev/null`
+   `ls <bus-root>/build-lane/*.building.md <bus-root>/build-lane/*.gating.md <bus-root>/build-lane/*.ready.md 2>/dev/null`
    and `git worktree list`. Stamp `RESUMED <ts>`.
 3. **Render the ledger and rebuild the dashboard.** Run `python scripts/spec_ledger.py`
    (regenerates the committed mirror) and read it. **Look for `rework` FIRST** — route them
@@ -108,22 +108,50 @@ Advance the ledger to `planned` (+ `writes`, `base_sha`). The builder advances i
 ### Footprint conflict gate
 
 **Never dispatch two overlapping-`writes:` specs to builders concurrently.** Before writing
-a candidate `.assigned`, compare its `writes:` against every in-flight `.building` and every
-unstarted `.assigned`. Any overlap → the candidate waits.
+a candidate `.assigned`, compare its `writes:` against every in-flight `.building`,
+`.gating`, and `.ready` file, and every unstarted `.assigned`. Any overlap → the candidate
+waits. (`.gating` files count as in-flight — their footprint stays locked while the detached
+grader runs.)
 
 Dispatch is **per-spec-readiness** — a conflict-free spec is assigned immediately; you never
 wait for a "wave." Two non-overlapping specs assign concurrently.
 
 ## Speculative re-check before every merge
 
-When a `.ready` lane file appears (builder wrote `ready_sha` + `card_path`), before merging:
+**The integrator scans `*.ready.md` (merge candidates) and `*.rework.md` (re-assign to
+pool). It explicitly ignores `*.gating.md` — those belong to the pane-independent detached
+gating-watch grader, not the integrator.** A `.ready` file arrives after the grader has
+already run the spec-294 mechanical checks + spec-296 blind two-verdict gate against the
+pushed branch; the integrator does NOT re-run that full gate — it runs the narrower
+speculative re-check (this section), which is unchanged.
+
+When a `.ready` lane file appears (grader wrote `graded_by` + `graded_at`), before merging:
 
 1. **Rebase/merge the branch onto CURRENT master in a scratch step.** A textual conflict →
    `rework`, master untouched.
 2. **Re-run the deterministic pre-gates** against the rebased tree:
    - build passes, every route in the card's `look_at:` returns HTTP 200, at least one
      non-blank screenshot, **plus the regression subset for every surface in `surfaces:`**.
-3. **Smoke:** the project's smoke command (CONFIG) against an affected route.
+3. **Re-chain any migration the branch adds (spec 286), BEFORE the single-head gate.**
+   If the branch adds file(s) under `api/alembic_supabase/versions/`, run
+   `python scripts/rechain_migration.py --branch feat/NNN-<slug> --onto master` so the
+   migration's `down_revision` is rewritten onto the live head (another migration may have
+   merged since this branch was cut — `api/alembic_supabase/` is no longer a gravity member,
+   so re-chaining is the integrator's serial reconciliation). The tool verifies a single
+   linear chain; if it **REFUSES** (id collision / indeterminate order / non-fast-forwardable,
+   or semantically-coupled DDL the author flagged as a sequential dependency) → send the spec
+   to `rework` with the named reason, master untouched (never force-merge a bad chain). On
+   success the existing single-head gate (`predeploy_gate.sh` / `migration_lint.py`) stays as
+   the backstop that bounces a missed re-chain.
+4. **Smoke:** the project's smoke command (CONFIG) against an affected route.
+5. **Fan-out provenance (spec 288).** Run `scripts/builder_provenance_gate.sh --base <base_sha>
+   --branch feat/NNN-<slug> --writes "<the spec's footprint>" --card <card_path>` — it BLOCKS
+   when **code** files beyond the carve-out (`≤1` direct code file & `<150` lines) trace to the
+   builder's own direct commits instead of worker-worktree merge integrations. A builder that
+   authored a substantive spec inline (the 600k/750k-balloon class) → `rework` with the named
+   reason; the card's `inline_authored:` marker must agree with what git shows. When you ASSIGN,
+   expect fan-out: a multi-file spec's `.ready` branch should carry `git merge --no-ff` worker
+   integrations, not one flat stack of direct builder commits.
 
 All-pass → `git merge --no-ff` to master + deploy. Any failure → `rework`, master untouched.
 Dispatch the whole re-check as a background sub-agent (`speculative-recheck`) returning a tiny
@@ -158,7 +186,11 @@ Do not duplicate reaping inline.
 ## Stateless return routing (every return-path goes through you, to the pool)
 
 - **`rework`:** re-assign the same spec to the pool as a `rework`-flagged `.assigned`
-  carrying `rework_reason` + the original branch ref. Any free builder can claim it.
+  carrying `rework_reason` + the original branch ref (base_sha=current master,
+  retry_count++; into `_dead/` at `BUILDER_MAX_RETRIES` — the R12 chokepoint). Any free
+  builder can claim it. **The rework source can now be the detached grader's
+  `.gating→.rework` transition** (not only your own §5 speculative re-check bounce) —
+  your routing job is identical regardless of source.
 - **Post-ship correctives (from rev):** become a `fixes:` spec then dispatched to the pool.
 
 You only ROUTE — you never repair the code yourself. A builder does the fix.
@@ -210,7 +242,7 @@ status: HANDED-OFF
 handed_off_at: <ISO>
 baton_token: <TOKEN= value from /tmp/orc-active>
 in_flight_builders:           # ALL live builders — from the lane, not just what you remember
-  - spec NNN → branch feat/NNN-<slug> / worktree <path> / state .building|.ready
+  - spec NNN → branch feat/NNN-<slug> / worktree <path> / state .building|.gating|.ready
 ready_awaiting_merge: [<NNN with ready_sha>, …]
 merge_in_flight: <spec being merged + step reached, or —>
 git: master at <sha>; live builder worktrees [<paths>]; tree clean? yes/no

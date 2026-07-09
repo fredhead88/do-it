@@ -49,6 +49,7 @@ import { callApi } from './lib/api.mjs';
 import { selectObservationLayer } from './lib/routing.mjs';
 import { judge } from './lib/judge.mjs';
 import { runCodex, runClaude } from './lib/judge-runners.mjs';
+import { gateRejectVerdict } from './lib/rejectgate.mjs';
 import { runIpt } from './lib/ipt.mjs';
 import {
   appendProgress,
@@ -57,6 +58,7 @@ import {
   pinSpecSha,
   detectScopeReduction,
 } from './lib/state.mjs';
+import { checkCaptureProvenance } from './lib/cardschema.mjs';
 
 // ── CLI ────────────────────────────────────────────────────────────────────────
 
@@ -358,7 +360,19 @@ async function observeCriterion(criterion, cfg, statePath, dir, periodLabel) {
     }
     const evidenceFile = path.join(dir, 'evidence', `${criterion.id}-${periodLabel}.json`);
     fs.mkdirSync(path.join(dir, 'evidence'), { recursive: true });
-    fs.writeFileSync(evidenceFile, JSON.stringify({ criterion: criterion.text, layer: 'DOM_ASSERT', url, assertion: a, result: res, at: new Date().toISOString() }, null, 2));
+    const domArtifact = { criterion: criterion.text, layer: 'DOM_ASSERT', url, assertion: a, result: res, at: new Date().toISOString(), captured_surface: a.page };
+    fs.writeFileSync(evidenceFile, JSON.stringify(domArtifact, null, 2));
+
+    // R-D2 provenance check: ensure this artifact came from the criterion's own surface.
+    const prov = checkCaptureProvenance(criterion, domArtifact);
+    if (prov.mismatch) {
+      return {
+        layer: 'DOM_ASSERT',
+        evidenceRef: evidenceFile,
+        judgeResult: { token: 'NOT_SATISFIED', reason: prov.reason, judge: 'provenance-check', unclear: false },
+      };
+    }
+
     return {
       layer: 'DOM_ASSERT',
       evidenceRef: evidenceFile,
@@ -382,8 +396,15 @@ async function observeCriterion(criterion, cfg, statePath, dir, periodLabel) {
     fs.appendFileSync(noteFile, note);
   }
   if (layer === 'DOM' || layer === 'DOM_INTERACTION') {
-    const snapFile = path.join(dir, `snap-overview.txt`);
-    const textFile = path.join(dir, `text-overview.txt`);
+    // Per-criterion surface binding (R-D2): use the criterion's declared surface page,
+    // falling back to 'overview' only when no surface is declared. This prevents the
+    // F4 wrong-artifact failure (criteria judged against a neighbor spec's snapshot).
+    const declaredPage = (criterion.criterion_type === 'ui' && criterion.dom_assertion && criterion.dom_assertion.page)
+      ? criterion.dom_assertion.page
+      : (criterion.surface || 'overview');
+    const capturedSurface = declaredPage;
+    const snapFile = path.join(dir, `snap-${capturedSurface}.txt`);
+    const textFile = path.join(dir, `text-${capturedSurface}.txt`);
 
     let evidenceText = '';
     if (fs.existsSync(snapFile)) {
@@ -392,7 +413,8 @@ async function observeCriterion(criterion, cfg, statePath, dir, periodLabel) {
       evidenceText = fs.readFileSync(textFile, 'utf8').slice(0, 4000);
     } else {
       try {
-        const url = cfg.prod_base + cfg.page_map.overview;
+        const pagePath = cfg.page_map[capturedSurface] || cfg.page_map.overview;
+        const url = cfg.prod_base + pagePath;
         const res = await shoot({ url, out: path.join(dir, `shot-crit-${evidenceName}.png`), statePath });
         evidenceText = fs.existsSync(res.textFile)
           ? fs.readFileSync(res.textFile, 'utf8').slice(0, 4000)
@@ -410,8 +432,19 @@ async function observeCriterion(criterion, cfg, statePath, dir, periodLabel) {
       at: new Date().toISOString(),
       source: snapFile,
       excerpt: evidenceText.slice(0, 1500),
+      captured_surface: capturedSurface,
     };
     fs.writeFileSync(evidenceFile, JSON.stringify(record, null, 2));
+
+    // R-D2 provenance check: fail if artifact surface mismatches criterion's declared surface.
+    const prov = checkCaptureProvenance(criterion, record);
+    if (prov.mismatch) {
+      return {
+        layer,
+        evidenceRef: evidenceFile,
+        judgeResult: { token: 'NOT_SATISFIED', reason: prov.reason, judge: 'provenance-check', unclear: false },
+      };
+    }
 
     const result = await judge(criterion.text, evidenceText, { runCodex, runClaude });
     return { layer, evidenceRef: evidenceFile, judgeResult: result };
@@ -419,7 +452,10 @@ async function observeCriterion(criterion, cfg, statePath, dir, periodLabel) {
 
   // ── VISION layer ────────────────────────────────────────────────────────────
   if (layer === 'VISION') {
-    const url = cfg.prod_base + cfg.page_map.overview;
+    // Per-criterion surface binding (R-D2): shoot the criterion's own declared surface.
+    const visionPage = criterion.surface || 'overview';
+    const pagePath = cfg.page_map[visionPage] || cfg.page_map.overview;
+    const url = cfg.prod_base + pagePath;
     const shotOut = path.join(dir, `shot-crit-${evidenceName}.png`);
     let screenshotB64 = '';
     let status = null;
@@ -440,14 +476,26 @@ Is the chart/visual element present and visible? Answer based on ONLY this scree
 
     const evidenceFile = path.join(dir, 'evidence', `${evidenceName}.json`);
     fs.mkdirSync(path.join(dir, 'evidence'), { recursive: true });
-    fs.writeFileSync(evidenceFile, JSON.stringify({
+    const visionArtifact = {
       criterion: criterion.text,
       layer: 'VISION',
       at: new Date().toISOString(),
       screenshot: shotOut,
       status,
       evidence_text: evidenceText,
-    }, null, 2));
+      captured_surface: visionPage,
+    };
+    fs.writeFileSync(evidenceFile, JSON.stringify(visionArtifact, null, 2));
+
+    // R-D2 provenance check.
+    const prov = checkCaptureProvenance(criterion, visionArtifact);
+    if (prov.mismatch) {
+      return {
+        layer,
+        evidenceRef: evidenceFile,
+        judgeResult: { token: 'NOT_SATISFIED', reason: prov.reason, judge: 'provenance-check', unclear: false },
+      };
+    }
 
     const result = await judge(criterion.text, evidenceText, { runCodex, runClaude });
     return { layer, evidenceRef: evidenceFile, judgeResult: result };
@@ -770,20 +818,64 @@ async function tick() {
         await callSpecLedgerVerify(spec.spec_id, criterion.id, 'CONFIRMED', finalJudgeResult.judge, evidenceRef || 'none');
 
       } else if (verdict === 'HOLLOW' || verdict === 'MISSING' || verdict === 'REGRESSION') {
-        log(`  ${verdict} — writing REJECTED + filing corrective (attempt ${attempts + 1}/${TRIAL_BUDGET})`);
-        await callSpecLedgerVerify(spec.spec_id, criterion.id, 'REJECTED', finalJudgeResult.judge, evidenceRef || 'none');
-        escalate(dir, {
-          event: 'CORRECTIVE_NEEDED',
-          spec: spec.spec_id,
-          criterionId: criterion.id,
-          criterion: criterion.text,
-          verdict,
-          judge: finalJudgeResult.judge,
-          reason: finalJudgeResult.reason,
-          attempts: attempts + 1,
-          deployed_sha: currentSha,
-          note: `File a corrective spec with observable criteria targeting: ${criterion.text}`,
-        });
+        // P5 reject-gate: before a SUBJECTIVE (LLM-judge) reject lands, route it
+        // through a fresh blind cross-vendor refuter (rejectgate.mjs). A reject
+        // lands only if the refuter independently UPHOLDS it; OVERTURNED/unclear
+        // → HOLD for human arbitration (false-reject insurance — rev nearly
+        // false-rejected 198 on a self-inflicted period off-by-one). Deterministic
+        // rejects (schema/provenance/dom-assert) are not subjective, so they skip
+        // the gate. On a hard refuter failure we fail OPEN (land), preserving the
+        // pre-gate behavior rather than stalling the loop.
+        const DETERMINISTIC = new Set(['schema', 'provenance-check', 'dom-assert', 'none']);
+        let gate = { decision: 'land', reason: 'deterministic judge — gate skipped' };
+        if (!DETERMINISTIC.has(finalJudgeResult.judge)) {
+          let evidenceText = '';
+          try { evidenceText = fs.readFileSync(evidenceRef, 'utf8').slice(0, 6000); }
+          catch { evidenceText = finalJudgeResult.reason || ''; }
+          try {
+            gate = await gateRejectVerdict(
+              criterion.text, evidenceText, finalJudgeResult.reason || '',
+              { runCodex, runClaude },
+            );
+          } catch (e) {
+            gate = { decision: 'land', reason: `refuter error: ${e.message} — failing open` };
+          }
+        }
+
+        if (gate.decision === 'land') {
+          log(`  ${verdict} — REJECTED [reject-gate: ${gate.reason}] + filing corrective (attempt ${attempts + 1}/${TRIAL_BUDGET})`);
+          await callSpecLedgerVerify(spec.spec_id, criterion.id, 'REJECTED', finalJudgeResult.judge, evidenceRef || 'none');
+          escalate(dir, {
+            event: 'CORRECTIVE_NEEDED',
+            spec: spec.spec_id,
+            criterionId: criterion.id,
+            criterion: criterion.text,
+            verdict,
+            judge: finalJudgeResult.judge,
+            reason: finalJudgeResult.reason,
+            attempts: attempts + 1,
+            deployed_sha: currentSha,
+            note: `File a corrective spec with observable criteria targeting: ${criterion.text}`,
+          });
+        } else {
+          // HELD: blind refuter did not uphold the reject. Do NOT land REJECTED;
+          // escalate for human arbitration so a possible false reject can't ding
+          // the build or burn the orc's time on a phantom corrective.
+          log(`  ${verdict} HELD by reject-gate — ${gate.reason} (REJECTED withheld pending arbitration)`);
+          escalate(dir, {
+            event: 'REJECT_HELD',
+            spec: spec.spec_id,
+            criterionId: criterion.id,
+            criterion: criterion.text,
+            verdict,
+            judge: finalJudgeResult.judge,
+            reason: finalJudgeResult.reason,
+            refutation: gate.refutation || null,
+            gate_reason: gate.reason,
+            deployed_sha: currentSha,
+            note: `Blind refuter did NOT uphold this reject — possible false reject. Arbitrate before filing a corrective.`,
+          });
+        }
 
       } else if (verdict === 'DATA-GAP') {
         await callSpecLedgerVerify(spec.spec_id, criterion.id, 'not-applicable', finalJudgeResult.judge, evidenceRef || 'none');

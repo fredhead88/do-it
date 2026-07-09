@@ -45,8 +45,11 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import os
 import re
+import shlex
+import subprocess
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -74,15 +77,16 @@ BRIEF_INBOX = Path(
 
 # Genuine bus numbers are 3 digits FOLLOWED BY A HYPHEN. The trailing `-` is
 # load-bearing: without it the year in a grandfathered date-stem file
-# (`2026-05-31-...`) reads as "202" and poisons allocation.
-#
-# The poison guard is RELATIVE, not absolute. The sequence grows without bound, so a
-# fixed ceiling goes stale and false-trips on every real allocation once the sequence
-# passes it. The `_NUM_RE` hyphen already stops a `2026-` year reading as 202; the
-# only remaining poison is a wildly mis-numbered 3-digit file, which shows up as an
-# outlier JUMP above the second-highest number. Refuse a jump larger than this gap
-# (the live sequence is dense, gaps of 1–2).
+# (`2026-05-31-...`) reads as "202" and poisons allocation. The sanity ceiling
+# trips when the computed next number leaves the genuine low-100s sequence —
+# the signature of a mis-numbered/date-stem file having inflated the max.
 _NUM_RE = re.compile(r"^([0-9]{3})-")
+# Poison guard is RELATIVE, not absolute. The genuine sequence grows without bound
+# (specs passed 150 long ago — a fixed ceiling false-trips on every real allocation),
+# so we don't cap the number. `_NUM_RE`'s trailing hyphen already stops a `2026-` year
+# reading as 202; the only remaining poison is a wildly mis-numbered 3-digit file,
+# which shows up as an outlier JUMP above the second-highest number. Refuse a jump
+# larger than this gap (the live sequence is dense, gaps of 1–2).
 ALLOC_GAP_CEILING = 40
 
 
@@ -98,26 +102,127 @@ VALID_VERDICT = {"CONFIRMED", "REJECTED"}
 # verification loop's HOLLOW/MISSING/REGRESSION all map to REJECTED before they
 # reach here; `not-applicable` marks a criterion that is legitimately unobservable
 # (no test-tenant data) so one data-gap can't freeze a spec forever; `not-run`
-# means not-yet-observed (incomplete).
-VALID_CRITERION_VERDICT = {"CONFIRMED", "REJECTED", "not-applicable", "not-run"}
+# means not-yet-observed (incomplete); `integration-owed` (spec 402 R4) marks an
+# external-I/O criterion whose real observed call has not happened yet — an
+# observable non-CONFIRMED value that blocks a spec-level pass (like not-run).
+VALID_CRITERION_VERDICT = {
+    "CONFIRMED",
+    "REJECTED",
+    "not-applicable",
+    "not-run",
+    "integration-owed",
+}
 
 
-def resolve_spec_verdict(criteria: dict) -> str | None:
+def resolve_spec_verdict(
+    criteria: dict, waivers: dict | None = None, declared=None
+) -> str | None:
     """Aggregate a per-criterion verdict map into a spec-level verdict.
 
     REJECTED if any criterion is REJECTED; CONFIRMED iff there is >=1 observable
     criterion and every observable (non-`not-applicable`) one is CONFIRMED;
-    otherwise None (incomplete -> renders as `awaiting-prod`).
+    otherwise None (incomplete -> renders as `awaiting-verify`).
+
+    Spec 402 R1 (full-declared-set gate — omission ≠ pass): `declared` is the FULL
+    set of criterion ids the spec declared (or None for legacy records that never
+    declared it). REJECTED still wins even when the set is incomplete (a definitive
+    rejection is a blocking signal, not an acceptance claim). But a spec-level
+    CONFIRMED is only derivable when EVERY declared criterion is present in the map:
+    if any declared id is missing, return None (incomplete). This closes the live
+    false-accept (spec 390): rev recorded 4 of 12 declared criteria, all CONFIRMED,
+    and the aggregator — blind to the declared count — derived CONFIRMED. A declared
+    criterion that is present but `not-run`/`integration-owed` already blocks via the
+    all-CONFIRMED check below; only OMISSION needed the extra gate. `declared=None`
+    reproduces the exact pre-402 behavior.
+
+    Spec 168 (Derived-Verdict Guard): a criterion that carries a VALID owner-waiver
+    (R3b — names both the criterion and the human) is treated as satisfied for the
+    purpose of the aggregate, so a recorded human override is the ONLY way a standing
+    REJECTED criterion stops blocking `accepted` short of being flipped with evidence.
+    A waiver that does not validate (missing criterion id or human) is ignored — it
+    cannot silently clear a red criterion.
     """
     if not criteria:
         return None
-    vals = list(criteria.values())
-    if any(v == "REJECTED" for v in vals):
+    waivers = waivers or {}
+    effective: list[str] = []
+    for cid, v in criteria.items():
+        if v == "REJECTED" and _waiver_is_valid(waivers.get(cid), cid):
+            # An owner-waiver naming this criterion + a human treats it as cleared.
+            effective.append("CONFIRMED")
+        else:
+            effective.append(v)
+    if any(v == "REJECTED" for v in effective):
+        # REJECTED wins even if the declared set is incomplete (spec 402 R1).
         return "REJECTED"
-    observable = [v for v in vals if v != "not-applicable"]
+    # Spec 402 R1: an incomplete map (a declared criterion never recorded) can never
+    # derive a spec-level pass — omission is not a pass.
+    if declared:
+        missing = [d for d in declared if d not in criteria]
+        if missing:
+            return None
+    observable = [v for v in effective if v != "not-applicable"]
     if observable and all(v == "CONFIRMED" for v in observable):
         return "CONFIRMED"
     return None
+
+
+def _waiver_is_valid(waiver, criterion_id: str) -> bool:
+    """An owner-waiver clears a REJECTED criterion only when it NAMES both the
+    criterion AND the human (spec 168 R3b). A generic spec-level stamp, or a waiver
+    missing either field, never validates. `waiver` is the per-criterion mapping
+    stored under the verdict's `waivers` key, e.g.
+        waivers: {c7: {criterion: c7, human: ephraim, reason: "..."}}
+    """
+    if not isinstance(waiver, dict):
+        return False
+    named = str(waiver.get("criterion") or "").strip()
+    human = str(waiver.get("human") or "").strip()
+    return named == criterion_id and bool(human)
+
+
+def derived_verdict(verdict: dict | None) -> str | None:
+    """The TRUSTED spec-level verdict for a verified/ record (spec 168 R1).
+
+    When the record carries a per-criterion `criteria` map, the spec-level verdict
+    is DERIVED from it (honouring owner-waivers), and any stored `verdict` field
+    that contradicts the criteria is IGNORED. Only a criteria-free legacy record
+    falls back to its stored spec-level `verdict`. This is what makes `accepted`
+    un-spoofable: a builder-side grader can stamp `verdict: CONFIRMED`, but if a
+    criterion is REJECTED the join derives REJECTED regardless of the stamp.
+
+    Spec 168 R5 (criteria-free non-rev guard): when the record has NO criteria
+    (absent or empty {}) and the judge is NOT 'rev' and NOT an owner-waiver, the
+    stored verdict is UNTRUSTED — return None (awaiting-verify) rather than CONFIRMED.
+    Only a rev-authored criteria-free record keeps the legacy fallback, because rev
+    is the sole role authorised to attest acceptance without per-criterion evidence.
+    Non-rev judges (blind-closeout, blind-closeout-opus, codex, …) that write a
+    bare spec-level CONFIRMED without criteria are treated as not-yet-accepted.
+    """
+    if not verdict:
+        return None
+    criteria = verdict.get("criteria")
+    if criteria:
+        # Spec 402 R1: honour the persisted declared set so a partial (omission)
+        # map can't derive a spec-level pass. Legacy records lack
+        # `declared_criteria` → declared=None → exactly the pre-402 behavior.
+        return resolve_spec_verdict(
+            criteria,
+            verdict.get("waivers"),
+            declared=verdict.get("declared_criteria"),
+        )
+    # criteria is absent or empty — legacy fallback path.
+    # A non-rev, non-owner-waiver judge's criteria-free CONFIRMED is untrusted:
+    # it cannot convey acceptance without per-criterion evidence (spec 168 R5).
+    # REJECTED from any judge is always honoured — that is a blocking signal, not
+    # an acceptance claim, so non-rev judges may still reject a spec.
+    stored = verdict.get("verdict")
+    if stored == "CONFIRMED":
+        judge = str(verdict.get("judge") or "").strip()
+        _trusted = judge == "rev" or judge.startswith("owner-waiver:")
+        if not _trusted:
+            return None
+    return stored
 
 
 @contextmanager
@@ -200,9 +305,14 @@ VALID_STATUS = {
     "registered",
     "planned",
     "building",
+    "gating",  # spec 300: pushed, under pane-independent close-out grader (building→gating→ready)
+    "ready",  # spec 252: built + self-gated, awaiting integrator merge
     "merged",
     "shipped",
     "accepted",  # legacy only — blocked by cmd_set; effective_status derives it from shipped ∧ CONFIRMED
+    # spec 282 R2: real intermediate lifecycle states the parallel model produced.
+    "awaiting-data",  # merged/live; owes only a data backfill / cron-populate / re-verify — NO code, so no builder claims it (the 261 shape)
+    "awaiting-verify",  # shipped + live, awaiting rev's verdict (the derived shipped∧¬CONFIRMED render also uses this name)
     "held",
     "bounced",
     "rework",
@@ -216,6 +326,8 @@ OUTSTANDING_STATUSES = {
     "registered",
     "planned",
     "building",
+    "gating",  # spec 300: pushed, under pane-independent close-out grader (building→gating→ready)
+    "ready",  # spec 252: non-terminal — built but not yet merged
     "merged",
     "held",
     "bounced",
@@ -224,6 +336,121 @@ OUTSTANDING_STATUSES = {
 }
 STALE_MERGED_HOURS = 24
 AWAITING_PROD_FLOOR_HOURS = 48
+
+# spec 282 R3 — a record at/after ship must not carry a held_reason that still
+# asserts a pre-ship reality. These are the post-ship states the lint checks, and
+# the free-text markers that betray a stale pre-ship assertion (the 269 pattern).
+_POST_SHIP_STATES = {"shipped", "awaiting-verify", "awaiting-data", "accepted"}
+_STALE_HELD_REASON_MARKERS = (
+    "not re-deployed",
+    "not redeployed",
+    "pending operator",
+    "awaiting operator",
+    "not deployed",
+    "awaiting deploy",
+    "pending deploy",
+    "pre-ship",
+)
+
+# spec 282 R4 — a CONFIRMED for an observed-data/migration-bearing criterion must
+# cite a LIVE-DB observation, never a manifest/git-ancestry artifact (which lags
+# under the fast cadence — a data verdict read off it can be wrong). These markers
+# distinguish a live prod-DB query (alembic_version, a SELECT, psql, the live-db
+# URL gate) from a "manifest shows / merged sha / git ancestry" claim.
+# Only STRONG, specific live-DB markers — a bare "row count" / "count(*)" phrase is
+# deliberately NOT a marker (it reads fine in a manifest sentence); a real live-DB
+# observation cites the version table, the prod URL gate, an actual SELECT…FROM, a
+# psql/catalog probe, or an explicit live-db: ref.
+_LIVE_DB_EVIDENCE_RE = re.compile(
+    r"(alembic_version|supabase_db_url|\bpsql\b|live-?db:|\bselect\b.+\bfrom\b|"
+    r"information_schema|pg_catalog|\\dt\b)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _evidence_has_live_db_observation(evidence: str) -> bool:
+    """True if the evidence ref cites a live prod-DB observation (spec 282 R4)."""
+    return bool(_LIVE_DB_EVIDENCE_RE.search(evidence or ""))
+
+
+# spec 402 R2 — typed-evidence registry. A criterion set CONFIRMED must cite
+# evidence whose SHAPE matches its declared type, not merely bear the label. The
+# type flags GATE the verdict: a cron criterion needs cron-run evidence, a
+# financial one needs a reconciliation/cent-tolerance observation, a UI one needs a
+# render/DOM observation, an observed-data one needs a live-DB query. The regexes
+# mirror the existing `_LIVE_DB_EVIDENCE_RE`.
+_CRON_EVIDENCE_RE = re.compile(
+    r"(cron_runs|last[_-]?run|post[- ]?fire|fired at|exit_code|\bSELECT\b.+\bcron)",
+    re.I | re.S,
+)
+_FINANCIAL_EVIDENCE_RE = re.compile(
+    r"(cent[- ]?tol|within .*cent|±\s*\$?0\.0|reconcil|settlement.*(match|tie)|"
+    r"abs\(.+\)\s*[<≤])",
+    re.I,
+)
+_UI_EVIDENCE_RE = re.compile(
+    r"(screenshot|rendered|\bDOM\b|selector|playwright|clicked|viewport|"
+    r"observed .*render)",
+    re.I,
+)
+
+# spec 402 R4 — an external-I/O criterion's CONFIRMED must reference a REAL observed
+# call (a live request/response), not a stub/mock/fixture. If the evidence looks
+# stub-only and carries no real-call marker, the criterion must be recorded as
+# `integration-owed` instead of CONFIRMED.
+_REAL_CALL_EVIDENCE_RE = re.compile(
+    r"(real[- ]?call|live call|request[- ]?id|http/?\d|status 2\d\d|"
+    r"actual .*(response|candidates?)|observed .*(call|response)|api returned)",
+    re.I,
+)
+_STUB_ONLY_RE = re.compile(
+    r"(stub|mock|monkeypatch|patched|fixture|pytest|test suite|responses\.add)",
+    re.I,
+)
+
+# Valid evidence types (spec 402 R2). observed-data reuses the spec-282 live-DB
+# gate; external-io (spec 402 R4) is gated separately by the real-call check.
+_EVIDENCE_TYPE_RE = {
+    "observed-data": _LIVE_DB_EVIDENCE_RE,
+    "cron": _CRON_EVIDENCE_RE,
+    "financial": _FINANCIAL_EVIDENCE_RE,
+    "ui": _UI_EVIDENCE_RE,
+}
+_VALID_CRITERION_TYPES = {
+    "observed-data",
+    "cron",
+    "financial",
+    "ui",
+    "external-io",
+}
+# Human-facing description of the evidence each type demands (for the refusal message).
+_EVIDENCE_TYPE_SHAPE = {
+    "observed-data": "a LIVE prod-DB observation (alembic_version / a SELECT…FROM against $SUPABASE_DB_URL / psql / catalog probe)",
+    "cron": "a cron-run observation (cron_runs row / last-run / post-fire / exit_code / a SELECT against a cron table)",
+    "financial": "a reconciliation observation (cent-tolerance / settlement tie-out / |diff| within ±$0.0x)",
+    "ui": "a rendered-UI observation (screenshot / DOM / selector / playwright / viewport render)",
+    "external-io": "≥1 observed REAL call (request-id / http status 2xx / actual response), not a stub/mock/fixture",
+}
+
+
+def manifest_trusted_for_ship(written_at, shipped_at) -> bool:
+    """R3 (spec 402): a deploy-manifest's match is only trustworthy for verifying a
+    spec if the manifest was written at/after the spec shipped. Returns False
+    (UNTRUSTED) when the manifest predates the ship (stale) or written_at is
+    unparseable/None. `shipped_at` None ⇒ nothing to be stale against ⇒ True."""
+    wa = _parse_ts(written_at)
+    if wa is None:
+        return False
+    sa = _parse_ts(shipped_at)
+    if sa is None:
+        return True
+    return wa >= sa
+
+
+def manifest_trusted(manifest: dict, shipped_at) -> bool:
+    """R3 (spec 402) thin wrapper — reads `written_at` off a deploy-manifest dict."""
+    return manifest_trusted_for_ship((manifest or {}).get("written_at"), shipped_at)
+
 
 # F5 — contract binding. A verdict that asserts a hardcoded $ figure records the
 # contract version it held under (`contract_version` on the verdict). When the
@@ -322,8 +549,18 @@ def effective_status(rec: dict, verdict: dict | None) -> str:
     records (and legacy records already stored as `accepted`) return their own
     stored status unchanged.
 
-    Precedence for shipped records: REJECTED → needs_human → CONFIRMED → awaiting-prod.
+    Precedence for shipped records: REJECTED → needs_human → CONFIRMED → awaiting-verify.
+    (spec 282 R1: a shipped record with no trusted CONFIRMED verdict renders as
+    `awaiting-verify` — the same name as the settable R2 state, unifying the derived
+    "shipped, awaiting rev's verdict" and the explicit one. Render already consults
+    `~/.claude/ledger/verified/*.yml` via load_verdicts → a real CONFIRMED still
+    derives `accepted`; this only fixes the LABEL of the not-yet-verified bucket.)
     An open needs_human beats CONFIRMED but not REJECTED (a definitive rejection wins).
+
+    Spec 168 (Derived-Verdict Guard): the spec-level verdict consumed here is the
+    DERIVED one (`derived_verdict`) — any standing REJECTED criterion blocks
+    `accepted` regardless of a stored spec-level `verdict: CONFIRMED` from any judge.
+    A builder-side grader can no longer spoof `accepted` over rev's red criteria.
     """
     status = rec.get("status")
     if status != "shipped":
@@ -335,14 +572,14 @@ def effective_status(rec: dict, verdict: dict | None) -> str:
         cur = current_contract_version()
         if cur is not None and cv != cur:
             return "needs-revalidation"
-    v = (verdict or {}).get("verdict")
+    v = derived_verdict(verdict)
     if v == "REJECTED":
         return "needs-rework"
     if (verdict or {}).get("needs_human"):
         return "needs-human"
     if v == "CONFIRMED":
         return "accepted"
-    return "awaiting-prod"
+    return "awaiting-verify"
 
 
 # --------------------------------------------------------------------- validate
@@ -364,6 +601,23 @@ def validate(records: list[dict]) -> list[str]:
         if status == "superseded" and not (rec.get("superseded_by") or "").strip():
             errors.append(f"{sid}: status=superseded requires superseded_by")
     return errors
+
+
+def stale_held_reason_records(records: list[dict]) -> list[tuple[str, str]]:
+    """spec 282 R3 — post-ship records carrying a held_reason that still asserts a
+    PRE-ship reality (the 269 pattern: status advanced, free-text note left behind).
+    Returned as (spec_id, held_reason); the `lint` command exits non-zero on any.
+    Kept OUT of validate()/--check (the deploy gate) so a pre-existing stale record
+    can't red-fail a deploy; the cmd_set auto-supersede prevents NEW ones, and this
+    dedicated lint surfaces the legacy offenders for the integrator to clean."""
+    out: list[tuple[str, str]] = []
+    for rec in records:
+        if rec.get("status") not in _POST_SHIP_STATES:
+            continue
+        hr = (rec.get("held_reason") or "").strip()
+        if hr and any(p in hr.lower() for p in _STALE_HELD_REASON_MARKERS):
+            out.append((rec.get("spec_id", rec.get("_file", "?")), hr))
+    return out
 
 
 # ----------------------------------------------------------------------- render
@@ -400,13 +654,21 @@ def render(records: list[dict], include_all: bool) -> str:
     ]
     needs_rework = [r for r in records if _eff(r) == "needs-rework"]
     needs_reval = [r for r in records if _eff(r) == "needs-revalidation"]
+    ready_to_merge = [r for r in records if r.get("status") == "ready"]
+    gating = [r for r in records if r.get("status") == "gating"]  # spec 300
     outstanding = [
         r
         for r in records
         if r.get("status") in OUTSTANDING_STATUSES
+        and r.get("status") != "ready"  # spec 252: ready has its own distinct section
+        and r.get("status") != "gating"  # spec 300: gating has its own distinct section
         and not (r.get("needs_human") or r.get("status") == "unknown")
     ]
-    awaiting_prod = [r for r in records if _eff(r) == "awaiting-prod"]
+    # spec 282 R1/R2: a shipped record with no trusted CONFIRMED verdict derives
+    # "awaiting-verify" (same bucket as the explicitly-settable R2 state); a record
+    # SET to awaiting-data renders in its own bucket (merged/live, owes only data).
+    awaiting_verify = [r for r in records if _eff(r) == "awaiting-verify"]
+    awaiting_data = [r for r in records if _eff(r) == "awaiting-data"]
     accepted = [r for r in records if _eff(r) == "accepted"]
     superseded = [r for r in records if r.get("status") == "superseded"]
 
@@ -499,11 +761,51 @@ def render(records: list[dict], include_all: bool) -> str:
             L.append(f"- ○ {_line(r)} — {status}")
     L.append("")
 
-    # --- shipped, awaiting prod-verification ---
-    L.append(f"## Awaiting prod-verification ({len(awaiting_prod)})")
-    if not awaiting_prod:
+    # --- spec 300: gating — pushed, under pane-independent close-out grader ---
+    L.append(f"## 🕓 Gating (detached close-out) ({len(gating)})")
+    if not gating:
         L.append("_None._")
-    for r in awaiting_prod:
+    for r in gating:
+        L.append(
+            f"- 🕓 {_line(r)} — **GATING** (close-out grader running; PASS→ready, FAIL→rework)"
+        )
+    L.append("")
+
+    # --- spec 252: ready to merge — distinct from building, before merged/shipped ---
+    L.append(f"## 🟢 Ready to merge (awaiting integrator) ({len(ready_to_merge)})")
+    if not ready_to_merge:
+        L.append("_None._")
+    for r in ready_to_merge:
+        branch = r.get("branch", "")
+        ready_sha = r.get("ready_sha", "")
+        suffix_parts = []
+        if branch:
+            suffix_parts.append(f"branch: {branch}")
+        if ready_sha:
+            suffix_parts.append(f"sha: {ready_sha[:8]}")
+        suffix = "  · " + ", ".join(suffix_parts) if suffix_parts else ""
+        L.append(f"- 🟢 {_line(r)} — **READY**{suffix}")
+    L.append("")
+
+    # --- spec 282 R2: merged/live but owes only data (no code to claim) ---
+    L.append(f"## Awaiting data ({len(awaiting_data)})")
+    if not awaiting_data:
+        L.append("_None._")
+    for r in awaiting_data:
+        note = r.get("awaiting_data_reason") or r.get("note") or ""
+        L.append(
+            f"- 📊 {_line(r)} — **AWAITING-DATA** (no code; backfill/cron/re-verify)"
+            + (f": {note}" if note else "")
+        )
+    L.append("")
+
+    # --- shipped/live, awaiting rev's verdict (spec 282 R1: renamed from
+    #     "awaiting prod-verification"; the derived shipped∧¬CONFIRMED and the
+    #     explicitly-set awaiting-verify state share this one truthful bucket) ---
+    L.append(f"## Awaiting verification ({len(awaiting_verify)})")
+    if not awaiting_verify:
+        L.append("_None._")
+    for r in awaiting_verify:
         card = r.get("review_card")
         suffix = f"  · card: {card}" if card else ""
         L.append(f"- 🚀 {_line(r)}{suffix}")
@@ -744,11 +1046,34 @@ def cmd_set(argv: list[str]) -> int:
         rec["superseded_by"] = a.superseded_by
     if a.needs:
         rec["needs"] = a.needs
+    # spec 282 R3: advancing to a post-ship state SUPERSEDES any stale pre-ship
+    # held_reason (the 269 pattern — status moved on but the note still says
+    # "pending operator" / "not re-deployed"). Preserve it under held_reason_cleared
+    # for the audit trail, then drop the live field so the record can't contradict
+    # its own status (and so the R3 --check lint stays green for a clean transition).
+    _clear_stale_held_reason = False
+    if a.status in _POST_SHIP_STATES:
+        _hr = (rec.get("held_reason") or "").strip()
+        if _hr and any(p in _hr.lower() for p in _STALE_HELD_REASON_MARKERS):
+            rec["held_reason_cleared"] = _hr
+            rec.pop("held_reason", None)
+            _clear_stale_held_reason = (
+                True  # also applied to the re-read rec inside the lock
+            )
     for kv in a.field:
         if "=" not in kv:
             return _die(f"--field must be KEY=VALUE, got {kv!r}")
         k, v = kv.split("=", 1)
-        rec[k] = v
+        if k == "owed_data_acs":
+            # spec 357: owed-data verdict carries a LIST of deferred observed-data ACs;
+            # gating-watch passes it as a compact JSON array string. Store as a real list.
+            try:
+                parsed = json.loads(v)
+            except (ValueError, TypeError):
+                parsed = None
+            rec[k] = parsed if isinstance(parsed, list) else v
+        else:
+            rec[k] = v
     new_entry = {"at": _now_iso(), "status": a.status, "by": a.by}
     rec.setdefault("history", []).append(new_entry)
 
@@ -758,16 +1083,190 @@ def cmd_set(argv: list[str]) -> int:
 
     # Collect the scalar field updates (excluding history — merged separately).
     updates = {k: v for k, v in rec.items() if k != "history"}
+    prev_status = None
     with _record_lock(path):
         # Re-read inside the lock so concurrent writers don't lose each other's
-        # history entries (both may have read the pre-lock snapshot).
+        # history entries (both may have read the pre-lock snapshot). The locked
+        # re-read also gives the authoritative PREVIOUS status (spec 278 R3).
         if path.exists():
             rec = _load_yaml(path)
+            prev_status = rec.get("status")
             rec.update(updates)
+            # spec 282 R3: `updates` can only add/overwrite keys; a superseded stale
+            # held_reason must be explicitly DELETED from the re-read record too.
+            if _clear_stale_held_reason:
+                rec.pop("held_reason", None)
             rec.setdefault("history", []).append(new_entry)
         _write_record(path, rec)
     print(f"{a.spec_id} → {a.status}")
+    # Spec 278 R3 — deterministic integrator→rev poke on a real transition INTO
+    # `shipped`. Fires on registered→…→shipped AND rework→…→shipped (prev != shipped),
+    # never on a no-op `set shipped` over an already-shipped row. Best-effort.
+    if a.status == "shipped" and prev_status != "shipped":
+        _poke_rev_on_ship(a.spec_id)
     return 0
+
+
+def _poke_rev_on_ship(spec_id: str) -> None:
+    """Side-effect of a ship transition: refresh the deploy-manifest, THEN poke
+    rev — and only if the manifest confirms prod is serving the just-shipped sha
+    (spec 278 R3 + spec 281 R1).
+
+    Under the fast parallel cadence the manifest written on a slower deploy
+    cadence was routinely stale when rev read it, so rev was poked to verify
+    against a sha that wasn't live yet — "match:no was a lie" (incidents 269/270/
+    255). R1 makes the ship event itself produce the truth it pokes on, in strict
+    order:
+      1. run scripts/write_deploy_manifest.sh so the manifest records the
+         just-shipped sha with a fresh written_at;
+      2. parse it and log the manifest write (with its written_at) BEFORE any
+         poke line;
+      3. fire the rev poke (carrying shipped_sha) ONLY if the manifest's
+         prod_serving_sha equals the shipped sha (match:yes); otherwise suppress
+         it with a `deploy-not-landed` log.
+
+    Absence/parse-failure of the manifest is NOT a mismatch — it falls back to
+    firing the poke, preserving the spec-278 behavior (a manifest we can't read
+    must not silence a real ship).
+
+    Best-effort by contract — a manifest or poke failure must NEVER affect the
+    ledger write that already succeeded. The poke delivery itself
+    (scripts/poke_rev_on_ship.sh) owns pane resolution, the corrective-278
+    real-ledger guard, relay-collision guard, NUDGE_DRY handling, and liveness.
+
+    Env overrides (defaults preserve prod):
+      DEPLOY_MANIFEST_PATH   — manifest file (default ~/.claude/deploy-manifest.json)
+      SHIP_HOOK_MANIFEST_CMD — manifest writer cmd (default the bundled script)
+      SHIP_HOOK_LOG          — ship-hook ordering log (default ~/.claude/ship-hook.log)
+    """
+    scripts_dir = Path(__file__).resolve().parent
+    poke_script = scripts_dir / "poke_rev_on_ship.sh"
+    if not poke_script.exists():
+        return
+
+    def _delegate_poke(extra_env: dict | None = None) -> None:
+        """Fire poke_rev_on_ship.sh, which owns the corrective-278 real-ledger
+        guard + pane resolution + NUDGE_DRY/liveness. Used directly when the
+        manifest dance is not applicable (preserves spec-278 behavior)."""
+        env = dict(os.environ)
+        if extra_env:
+            env.update(extra_env)
+        try:
+            subprocess.run(
+                ["bash", str(poke_script), spec_id],
+                timeout=20,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Run the manifest dance ONLY for a genuine prod ship (the integrator runs
+    # `set shipped` against the canonical ~/.claude/ledger, no real-ledger
+    # override) OR when a test explicitly opts in by pointing the manifest at a
+    # sandbox. A fixture ship that merely overrides the real-ledger to a sandbox
+    # (the AC4 corrective-278 tests) must NOT ssh to prod or touch the real
+    # manifest — it delegates straight to the poke (whose own guard then runs).
+    real_ledger_overridden = (
+        "PANE_POKE_REAL_LEDGER_DIR" in os.environ
+        or "NUDGE_REAL_LEDGER_DIR" in os.environ
+    )
+    manifest_opt_in = (
+        "SHIP_HOOK_MANIFEST_CMD" in os.environ or "DEPLOY_MANIFEST_PATH" in os.environ
+    )
+    if real_ledger_overridden and not manifest_opt_in:
+        _delegate_poke()
+        return
+
+    try:
+        manifest_path = Path(
+            os.environ.get(
+                "DEPLOY_MANIFEST_PATH",
+                str(Path.home() / ".claude" / "deploy-manifest.json"),
+            )
+        )
+        log_path = Path(
+            os.environ.get(
+                "SHIP_HOOK_LOG", str(Path.home() / ".claude" / "ship-hook.log")
+            )
+        )
+
+        def _log(msg: str) -> None:
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                with log_path.open("a") as fh:
+                    fh.write(f"{ts} ship-hook[{spec_id}]: {msg}\n")
+            except Exception:  # noqa: BLE001
+                pass
+
+        # 1. Refresh the manifest FIRST (best-effort; exit 1 on mismatch still
+        #    writes the file, so we read the file, not the exit code).
+        manifest_cmd = os.environ.get("SHIP_HOOK_MANIFEST_CMD")
+        argv = (
+            shlex.split(manifest_cmd)
+            if manifest_cmd
+            else ["bash", str(scripts_dir / "write_deploy_manifest.sh")]
+        )
+        try:
+            subprocess.run(argv, timeout=90, capture_output=True, text=True)
+        except Exception as e:  # noqa: BLE001 — ship must not fail on manifest
+            _log(f"manifest writer failed ({e!r})")
+
+        # 2. Parse the manifest and log the write BEFORE any poke line.
+        master_sha = prod_serving_sha = written_at = match = None
+        try:
+            data = json.loads(manifest_path.read_text())
+            master_sha = data.get("master_sha")
+            prod_serving_sha = data.get("prod_serving_sha")
+            written_at = data.get("written_at")
+            match = data.get("match")
+        except Exception:  # noqa: BLE001 — absent/unreadable manifest
+            data = None
+
+        shipped_sha = master_sha or ""
+
+        if data is None:
+            # No readable manifest — fall back to firing (absence != mismatch).
+            _log("manifest absent/unreadable; firing poke (fallback, preserves 278)")
+            should_poke = True
+        else:
+            _log(
+                f"manifest written written_at={written_at} master={master_sha} "
+                f"prod_serving={prod_serving_sha} match={match}"
+            )
+            # Gate: prod must be serving the just-shipped sha. The manifest writer
+            # already computes the authoritative `match` (prefix-compares short/full
+            # shas) — trust it whenever present (an explicit match=no must suppress,
+            # even if raw prefixes happen to overlap). Only when the field is
+            # absent/unrecognized do we fall back to an explicit prefix compare.
+            if match in ("yes", "no"):
+                should_poke = match == "yes"
+            else:
+                should_poke = (
+                    bool(shipped_sha)
+                    and bool(prod_serving_sha)
+                    and prod_serving_sha not in ("", "unknown")
+                    and (
+                        prod_serving_sha.startswith(shipped_sha)
+                        or shipped_sha.startswith(prod_serving_sha)
+                    )
+                )
+            if not should_poke:
+                _log(
+                    f"deploy-not-landed: prod_serving={prod_serving_sha} != "
+                    f"shipped={shipped_sha}; poke suppressed"
+                )
+
+        if not should_poke:
+            return
+
+        # 3. Fire the rev poke, carrying the shipped sha.
+        _log(f"poke fired shipped_sha={shipped_sha}")
+        _delegate_poke({"SHIPPED_SHA": shipped_sha} if shipped_sha else None)
+    except Exception:  # noqa: BLE001 — ship must not fail because a poke did
+        pass
 
 
 # ----------------------------------------------------------------- verify (verifier-owned namespace)
@@ -853,12 +1352,92 @@ def cmd_verify(argv: list[str]) -> int:
         metavar="ID=VERDICT",
         help="per-criterion verdict; spec-level verdict is DERIVED from the full map",
     )
+    # spec 282 R4: a criterion typed observed-data / migration-bearing may only be
+    # CONFIRMED against a LIVE-DB observation (alembic_version + a prod table/row
+    # query), never a manifest- or git-ancestry-only artifact (which lags under the
+    # fast cadence). List such criteria here; for the legacy whole-spec path use
+    # --observed-data.
+    ap.add_argument(
+        "--observed-data-criterion",
+        dest="observed_data_criteria",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="mark criterion ID as observed-data/migration-bearing (CONFIRMED needs live-DB evidence)",
+    )
+    ap.add_argument(
+        "--observed-data",
+        action="store_true",
+        help="legacy whole-spec: this verdict is observed-data/migration-bearing (CONFIRMED needs live-DB evidence)",
+    )
+    # spec 402 R1 — the FULL declared criterion set. Without it a partial map
+    # (rev records 4 of 12, all CONFIRMED) derives a false spec-level CONFIRMED (the
+    # 390 false-accept). Give it as a count (expands to {c1..cN}) OR an explicit id
+    # list; it persists on the record so it sticks across incremental calls.
+    ap.add_argument(
+        "--criteria-count",
+        dest="criteria_count",
+        type=int,
+        default=None,
+        help="spec 402 R1: total declared criteria N; expands to the set {c1..cN}",
+    )
+    ap.add_argument(
+        "--declared-criteria",
+        dest="declared_criteria",
+        default=None,
+        metavar="c1,c2,c3",
+        help="spec 402 R1: comma-separated FULL declared criterion id set",
+    )
+    # spec 402 R2 — typed-evidence registry. A criterion's CONFIRMED must cite
+    # evidence whose SHAPE matches its type. Persisted so the gate holds across calls.
+    ap.add_argument(
+        "--criterion-type",
+        dest="criterion_types",
+        action="append",
+        default=[],
+        metavar="ID=TYPE",
+        help="spec 402 R2: type a criterion (observed-data|cron|financial|ui|external-io); "
+        "CONFIRMED must then match that evidence shape",
+    )
+    # spec 402 R4 — shorthand for type external-io (parallel to --observed-data-criterion).
+    ap.add_argument(
+        "--external-io-criterion",
+        dest="external_io_criteria",
+        action="append",
+        default=[],
+        metavar="ID",
+        help="spec 402 R4: mark criterion ID as external-I/O (CONFIRMED needs an observed real call, else set =integration-owed)",
+    )
     a = ap.parse_args(argv)
 
     now = _now_iso()
     path = _verified_path(a.spec_id)
     rec = _load_yaml(path) if path.exists() else {"spec_id": a.spec_id, "history": []}
 
+    # spec 402 R1 — resolve the FULL declared criterion set (flags XOR persisted).
+    # Once declared via a flag it PERSISTS on the record, so it sticks across the
+    # incremental calls rev makes; a later call may omit the flag and still be gated.
+    if a.criteria_count is not None and a.declared_criteria is not None:
+        return _die(
+            "pass EITHER --criteria-count N OR --declared-criteria c1,c2,... "
+            "(not both — they name the same declared set two ways)"
+        )
+    declared_from_flag = None
+    if a.criteria_count is not None:
+        if a.criteria_count < 1:
+            return _die(f"--criteria-count must be >= 1, got {a.criteria_count}")
+        declared_from_flag = [f"c{i}" for i in range(1, a.criteria_count + 1)]
+    elif a.declared_criteria is not None:
+        declared_from_flag = [
+            c.strip() for c in a.declared_criteria.split(",") if c.strip()
+        ]
+    if declared_from_flag is not None:
+        declared = sorted(set(declared_from_flag))  # canonicalize + persist
+        rec["declared_criteria"] = declared
+    else:
+        declared = rec.get("declared_criteria")  # persisted, or None (legacy)
+
+    missing: list[str] = []  # spec 402 R1 — omitted declared ids, named in messages
     if a.criterion:
         # Pass 1: validate all entries WITHOUT mutating crit (so a bad entry
         # never partially applies its predecessors).
@@ -876,13 +1455,32 @@ def cmd_verify(argv: list[str]) -> int:
         for kv in a.criterion:
             k, v = kv.split("=", 1)
             crit[k] = v
-        spec_verdict = resolve_spec_verdict(crit)
+        # Spec 168 R1/R3 + spec 402 R1: derive HONOURING owner-waivers AND the full
+        # declared set (an incomplete map can no longer derive a spec-level pass).
+        spec_verdict = resolve_spec_verdict(crit, rec.get("waivers"), declared)
+        # spec 402 R1 fail-safe (critical): without a KNOWN declared set, a
+        # spec-level CONFIRMED is un-trustworthy — the aggregator is blind to any
+        # criteria that were simply never recorded (the 390 false-accept: 4 of 12
+        # recorded, all CONFIRMED). Refuse and force rev to declare N first.
+        if declared is None and (
+            resolve_spec_verdict(crit, rec.get("waivers"), None) == "CONFIRMED"
+        ):
+            return _die(
+                f"REFUSED (spec 402 R1): cannot derive a spec-level CONFIRMED for "
+                f"{a.spec_id} without the FULL declared criterion set — a partial "
+                f"map (e.g. 4 of 12 criteria, all CONFIRMED) would false-accept (the "
+                f"390 incident). Pass --criteria-count N or --declared-criteria "
+                f"c1,c2,... to declare the full set."
+            )
+        # spec 402 R1 missing-name: name the omitted declared criteria in messages.
+        missing = [d for d in declared if d not in crit] if declared else []
         # The verifier may pass a spec-level verdict only if it agrees with the
         # derived one — we refuse a caller-supplied verdict that overrides the map.
         if a.verdict is not None and a.verdict != spec_verdict:
+            _miss = f" (missing declared criteria: {missing})" if missing else ""
             return _die(
                 f"refusing caller-supplied spec verdict {a.verdict!r}: the criteria "
-                f"map derives {spec_verdict!r}"
+                f"map derives {spec_verdict!r}{_miss}"
             )
     else:
         # Legacy path: explicit spec-level verdict, no per-criterion map.
@@ -892,7 +1490,113 @@ def cmd_verify(argv: list[str]) -> int:
             return _die(
                 f"invalid verdict {a.verdict!r} (one of {sorted(VALID_VERDICT)})"
             )
+        # Spec 168 R2 (write-time block): even on the legacy path, a spec-level
+        # CONFIRMED is REFUSED while the record carries a standing REJECTED criterion
+        # without a valid owner-waiver. This is the hole `blind-closeout` walked
+        # through (criteria already on the record from rev, then a bare CONFIRMED
+        # stamp). A non-contradicting CONFIRMED (no red criteria) still writes.
+        if a.verdict == "CONFIRMED":
+            standing = rec.get("criteria") or {}
+            derived = resolve_spec_verdict(standing, rec.get("waivers"))
+            if derived == "REJECTED":
+                red = [
+                    cid
+                    for cid, v in standing.items()
+                    if v == "REJECTED"
+                    and not _waiver_is_valid((rec.get("waivers") or {}).get(cid), cid)
+                ]
+                return _die(
+                    f"REFUSED (spec 168): cannot stamp spec-level CONFIRMED on "
+                    f"{a.spec_id} — criteria {red} stand REJECTED. A builder-side "
+                    f"grader may CONFIRM individual criteria with evidence "
+                    f"(`--criterion {red[0]}=CONFIRMED --evidence ...`) or an owner "
+                    f"may waive a named criterion (`waive {a.spec_id} --criterion "
+                    f"{red[0]} --human NAME --reason ...`); it may NOT override a "
+                    f"standing rev REJECTED with a bare spec-level stamp."
+                )
         spec_verdict = a.verdict
+
+    # spec 402 R2/R4 — typed-evidence registry + GATE (generalizes the spec-282
+    # observed-data block below). A criterion set CONFIRMED must cite evidence whose
+    # SHAPE matches its declared type; the type is persisted so the gate holds across
+    # calls. Build the registry from persisted ∪ this-call flags.
+    criterion_types = dict(rec.get("criterion_types") or {})
+    # back-compat: legacy persisted observed_data/external_io lists mirror in.
+    for _cid in rec.get("observed_data_criteria", []) or []:
+        criterion_types.setdefault(_cid, "observed-data")
+    for _cid in rec.get("external_io_criteria", []) or []:
+        criterion_types.setdefault(_cid, "external-io")
+    for kv in a.criterion_types:
+        if "=" not in kv:
+            return _die(f"--criterion-type must be ID=TYPE, got {kv!r}")
+        _cid, _ctype = (s.strip() for s in kv.split("=", 1))
+        if _ctype not in _VALID_CRITERION_TYPES:
+            return _die(
+                f"invalid criterion type {_ctype!r} for {_cid!r} "
+                f"(one of {sorted(_VALID_CRITERION_TYPES)})"
+            )
+        criterion_types[_cid] = _ctype
+    # the two shorthands map onto the registry (and keep their legacy audit lists).
+    for _cid in a.observed_data_criteria:
+        criterion_types[_cid] = "observed-data"
+    for _cid in a.external_io_criteria:
+        criterion_types[_cid] = "external-io"
+
+    # The GATE: for every criterion set CONFIRMED in THIS call, its type's evidence
+    # shape is required. external-io additionally needs an observed REAL call (R4).
+    applied_ids = [kv.split("=", 1)[0] for kv in a.criterion]
+    for cid in applied_ids:
+        if crit.get(cid) != "CONFIRMED":
+            continue
+        ctype = criterion_types.get(cid)
+        if ctype is None:
+            continue  # untyped criterion — no evidence-shape gate
+        if ctype == "external-io":
+            # spec 402 R4: a stub/mock/fixture-only ref with no real-call marker is
+            # refused — an external-I/O criterion needs ≥1 observed real call.
+            ev = a.evidence or ""
+            if _STUB_ONLY_RE.search(ev) and not _REAL_CALL_EVIDENCE_RE.search(ev):
+                return _die(
+                    f"REFUSED (spec 402 R4): external-I/O criterion {cid!r} needs "
+                    f"≥1 observed real call — the --evidence looks stub/mock/"
+                    f"fixture-only. Either record the real-call observation in "
+                    f"--evidence (request-id / http status 2xx / actual response) "
+                    f"or set `--criterion {cid}=integration-owed`. "
+                    f"Got --evidence: {a.evidence!r}"
+                )
+        else:
+            rx = _EVIDENCE_TYPE_RE.get(ctype)
+            if rx is not None and not rx.search(a.evidence or ""):
+                return _die(
+                    f"REFUSED (spec 402 R2): criterion {cid!r} typed {ctype!r} "
+                    f"cannot be CONFIRMED on this evidence — it must cite "
+                    f"{_EVIDENCE_TYPE_SHAPE.get(ctype, ctype)}. "
+                    f"Got --evidence: {a.evidence!r}"
+                )
+
+    # spec 282 R4 preserved — the legacy WHOLE-SPEC observed-data gate: a whole-spec
+    # CONFIRMED without a LIVE-DB observation is refused (manifest/git-ancestry lags).
+    if a.observed_data and spec_verdict == "CONFIRMED":
+        if not _evidence_has_live_db_observation(a.evidence):
+            return _die(
+                "REFUSED (spec 282 R4): observed-data/migration-bearing whole-spec "
+                f"CONFIRMED on {a.spec_id} cannot rest on manifest- or git-ancestry-"
+                "only evidence. A data/migration verdict must cite a LIVE prod-DB "
+                "observation (e.g. alembic_version + a table/row SELECT against "
+                f"$SUPABASE_DB_URL). Got --evidence: {a.evidence!r}"
+            )
+
+    # persist the typed-evidence registry + audit lists (spec 402 R2/R4).
+    if criterion_types:
+        rec["criterion_types"] = dict(sorted(criterion_types.items()))
+    if a.observed_data_criteria:
+        rec["observed_data_criteria"] = sorted(
+            set(rec.get("observed_data_criteria", [])) | set(a.observed_data_criteria)
+        )
+    if a.external_io_criteria:
+        rec["external_io_criteria"] = sorted(
+            set(rec.get("external_io_criteria", [])) | set(a.external_io_criteria)
+        )
 
     # Item 1: do not write `verdict: null` when criteria are present but incomplete.
     if spec_verdict is None:
@@ -915,16 +1619,86 @@ def cmd_verify(argv: list[str]) -> int:
     with _record_lock(path):  # advisory flock — same as register/set
         _write_verdict(path, rec)
     if spec_verdict is None:
-        print(f"{a.spec_id} criteria updated (no verdict yet — incomplete)")
+        # spec 402 R1: name the omitted declared criteria that keep this incomplete.
+        _miss = f" — missing declared criteria: {missing}" if missing else ""
+        print(f"{a.spec_id} criteria updated (no verdict yet — incomplete){_miss}")
     else:
         print(f"{a.spec_id} verified -> {spec_verdict}")
+    return 0
+
+
+def cmd_waive(argv: list[str]) -> int:
+    """Record an owner-waiver for a single REJECTED criterion (spec 168 R3b).
+
+    The ONLY non-evidence path past a standing REJECTED criterion: an explicit
+    human override that NAMES the criterion AND the human. Stored on the verdict
+    record under `waivers: {<criterion>: {criterion, human, reason, at}}`. After a
+    valid waiver, `derived_verdict` treats that criterion as cleared, so the spec
+    can re-derive to CONFIRMED if every other observable criterion is green. A
+    waiver lacking the criterion id or the human is refused — never a generic stamp.
+    """
+    ap = argparse.ArgumentParser(prog="spec_ledger.py waive")
+    ap.add_argument("spec_id")
+    ap.add_argument("--criterion", required=True, help="the criterion id being waived")
+    ap.add_argument("--human", required=True, help="the named human who waived it")
+    ap.add_argument("--reason", required=True, help="why the red criterion is accepted")
+    a = ap.parse_args(argv)
+
+    criterion = (a.criterion or "").strip()
+    human = (a.human or "").strip()
+    reason = (a.reason or "").strip()
+    if not criterion:
+        return _die("waive needs a non-empty --criterion (name the exact criterion)")
+    if not human:
+        return _die("waive needs a non-empty --human (name the human who waived it)")
+    if not reason:
+        return _die("waive needs a non-empty --reason")
+
+    path = _verified_path(a.spec_id)
+    if not path.exists():
+        return _die(
+            f"no verdict record for {a.spec_id} — a waiver only applies to an "
+            f"existing verified/ record with criteria"
+        )
+    rec = _load_yaml(path)
+    criteria = rec.get("criteria") or {}
+    if criterion not in criteria:
+        return _die(
+            f"criterion {criterion!r} is not on {a.spec_id}'s criteria map "
+            f"(have: {sorted(criteria)}) — a waiver must name a real criterion"
+        )
+    now = _now_iso()
+    waiver = {
+        "criterion": criterion,
+        "human": human,
+        "reason": reason,
+        "at": now,
+    }
+    with _record_lock(path):
+        rec = _load_yaml(path)
+        rec.setdefault("waivers", {})[criterion] = waiver
+        # Re-derive the spec-level verdict now that the waiver may clear the criterion.
+        rec["verdict"] = resolve_spec_verdict(rec.get("criteria") or {}, rec["waivers"])
+        if rec["verdict"] is None:
+            rec.pop("verdict", None)
+        rec["at"] = now
+        rec.setdefault("history", []).append(
+            {
+                "at": now,
+                "verdict": "owner-waiver",
+                "judge": f"owner-waiver:{human}",
+                "criterion": criterion,
+            }
+        )
+        _write_verdict(path, rec)
+    print(f"{a.spec_id} criterion {criterion} waived by {human}")
     return 0
 
 
 def cmd_alert(argv: list[str]) -> int:
     """Time-based ops alert (kept OUT of --check, which must stay deterministic).
 
-    Flags any spec that has been `awaiting-prod` longer than the floor — i.e.
+    Flags any spec that has been `awaiting-verify` longer than the floor — i.e.
     shipped but the verifier has produced no verdict. Exit 1 if any are stale.
     """
     ap = argparse.ArgumentParser(prog="spec_ledger.py alert")
@@ -934,17 +1708,17 @@ def cmd_alert(argv: list[str]) -> int:
     verdicts = load_verdicts()
     stale: list[tuple[str, float]] = []
     for rec in load_records():
-        if effective_status(rec, verdicts.get(rec.get("spec_id"))) != "awaiting-prod":
+        if effective_status(rec, verdicts.get(rec.get("spec_id"))) != "awaiting-verify":
             continue
         hrs = _hours_since(_shipped_at(rec))
         if hrs is not None and hrs > a.floor_hours:
             stale.append((rec.get("spec_id", "?"), hrs))
 
     if not stale:
-        print("alert OK — no spec stuck awaiting-prod.")
+        print("alert OK — no spec stuck awaiting-verify.")
         return 0
     for sid, hrs in stale:
-        print(f"STALE: {sid} — awaiting-prod for {round(hrs / 24, 1)}d (no verdict)")
+        print(f"STALE: {sid} — awaiting-verify for {round(hrs / 24, 1)}d (no verdict)")
     return 1
 
 
@@ -978,24 +1752,48 @@ def observable_warnings(records: list[dict]) -> list[str]:
 # ------------------------------------------------------------------------- main
 
 
-# 076 role guard. A non-builder session (ROLE=rev, ROLE=watcher) may NEVER allocate
-# a number or write a build status — its only legitimate write is `verify` (into the
-# verified/ namespace). Enforced by a guard, not convention: a reviewer that called
-# `set`/`next-num` once shipped an outage. `verify`, render, `--check`, and `alert`
-# stay open (read-only / verified-namespace).
-_BUILDER_ONLY = {"next-num", "register", "set"}
+# Builder-only ledger mutations. ROLE=rev (the verifier) may NEVER allocate a
+# number or write a build status — its only legitimate write is `verify` (into the
+# verified/ namespace). Enforcing 076 by a guard, not convention: a rev that called
+# `set rework`/`next-num` once shipped an outage (076 → 2026-06-07). `verify`,
+# render, `--check`, and `alert` stay open to rev (read-only / verified-namespace).
+_REV_FORBIDDEN = {"next-num", "register", "set"}
+
+
+def _role_guard(sub: str) -> None:
+    if os.environ.get("ROLE") == "rev" and sub in _REV_FORBIDDEN:
+        sys.stderr.write(
+            f"REFUSED: ROLE=rev may not run `{sub}` — the verifier is read-only on the "
+            f"build ledger (076). rev's only write is `verify` (verified/ namespace). "
+            f"File a corrective-inbox entry; orc/think converts it to a rework row.\n"
+        )
+        raise SystemExit(3)
+
+
+def cmd_lint(argv: list[str]) -> int:
+    """spec 282 R3 — flag post-ship records whose held_reason still asserts a
+    pre-ship state (the 269 pattern: status advanced but the note left behind says
+    "pending operator" / "not re-deployed"). Exit 1 naming them; 0 if clean. Kept
+    SEPARATE from the deploy-gating --check so a legacy stale record can't red-fail
+    a deploy; cmd_set auto-supersedes the field on any new post-ship transition."""
+    argparse.ArgumentParser(prog="spec_ledger.py lint").parse_args(argv)
+    stale = stale_held_reason_records(load_records())
+    if not stale:
+        print("lint OK — no post-ship record carries a stale pre-ship held_reason.")
+        return 0
+    print(
+        "LEDGER LINT FAILED — stale pre-ship held_reason (spec 282 R3):",
+        file=sys.stderr,
+    )
+    for sid, hr in stale:
+        print(f"  - {sid}: {hr[:160]}", file=sys.stderr)
+    return 1
 
 
 def main() -> int:
     argv = sys.argv[1:]
-    role = os.environ.get("ROLE")
-    if role in {"rev", "watcher"} and argv and argv[0] in _BUILDER_ONLY:
-        sys.stderr.write(
-            f"REFUSED: ROLE={role} may not run `{argv[0]}` — only the orchestrator "
-            f"(orc) writes the build ledger (076 rule). A reviewer's only write is "
-            f"`verify` (the verified/ namespace).\n"
-        )
-        return 2
+    if argv:
+        _role_guard(argv[0])
     if argv and argv[0] == "next-num":
         return cmd_next_num(argv[1:])
     if argv and argv[0] == "register":
@@ -1004,8 +1802,12 @@ def main() -> int:
         return cmd_set(argv[1:])
     if argv and argv[0] == "verify":
         return cmd_verify(argv[1:])
+    if argv and argv[0] == "waive":
+        return cmd_waive(argv[1:])
     if argv and argv[0] == "alert":
         return cmd_alert(argv[1:])
+    if argv and argv[0] == "lint":
+        return cmd_lint(argv[1:])
 
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--render", action="store_true", help="render (default)")
@@ -1015,11 +1817,33 @@ def main() -> int:
     ap.add_argument(
         "--check", action="store_true", help="validate records; non-zero on error"
     )
+    ap.add_argument(
+        "--count-actionable",
+        action="store_true",
+        help=(
+            "print a single integer: the number of ledger records whose status is "
+            "in the actionable (non-terminal) set {registered, planned, building, rework}. "
+            "Exits 0. Intended for machine consumers (e.g. orc-idle-watch.sh) that must "
+            "never grep human render text."
+        ),
+    )
     args = ap.parse_args()
 
     records = load_records()
 
     errors = validate(records)
+
+    if args.count_actionable:
+        # Machine-readable count for the idle watchdog.  Print ONLY an integer —
+        # nothing else — so the caller can set QUEUED=$(...) directly without grep.
+        # Terminal/non-actionable states (accepted, superseded, held, bounced,
+        # retired, unknown, merged, shipped, …) are excluded.
+        # `held` is deliberately excluded: orc-paused on a real blocker; a nudge
+        # would be noise — spec 226 open-question resolution.
+        ACTIONABLE = {"registered", "planned", "building", "rework"}
+        count = sum(1 for r in records if r.get("status") in ACTIONABLE)
+        print(count)
+        return 0
 
     if args.check:
         if errors:
