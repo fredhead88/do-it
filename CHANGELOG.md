@@ -8,6 +8,14 @@ Each entry links to the dated design doc in `docs/` that holds the *why*; this f
 is the terse *what*. Tags mark the commit each version shipped at, so
 `git checkout v1.0.0` gets you that release.
 
+## [4.7.1] — 2026-07-09 — Docs: README rewritten for the v4.7.0 model
+
+Docs-only. The README still described the pre-4.0 two-role model (a single `orc`
+that builds). Rewritten for the current pipeline: parallel builders in isolated
+worktrees, the lean integrator (`orc` alias), the build lane (`assigned → building →
+gating → ready`), the detached blind grader, the machine-global bus, rev/watcher, and
+the standing-role cron automation. No code change.
+
 ## [4.7.0] — 2026-07-09 — Gating, standing-role liveness, and close-out hardening
 
 Consolidated release bringing the distro current with live (folds the never-cut
